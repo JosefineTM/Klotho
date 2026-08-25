@@ -1,0 +1,9 @@
+.Rproj.user
+
+**/*archive*
+**/.Rhistory
+**/.Rprofile
+**/.Rdata
+**/paths.R
+**/renv.lock
+
