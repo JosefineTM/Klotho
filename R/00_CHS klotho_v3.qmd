@@ -1,0 +1,1144 @@
+---
+title: "CHS klotho"
+
+project:
+  output-dir: /Volumes/auditing-groupdirs/SUN-IFSV-CHS-data/CHS_Klotho/Analysis/1_data_exploration
+  
+format:
+  html:
+    toc: true
+    toc_depth: 3
+    html-math-method: katex
+    grid:
+      body-width: 1200px
+---
+
+# Introduction
+
+This document loads and explores the Klotho measures available in the Cardiovascular Health Study (CHS) at the year-5 visit, before the main analyses (Aims 1–5).
+
+Klotho is measured on three platforms:
+
+- **SomaScan 5K** (ANML-normalised): KL (α-klotho), KLB (β-klotho) and LCTL (γ-klotho)
+- **Olink** (TOPMed, bridged NPX): KLB, LCTL and GBA3 (klotho-related protein)
+- **ELISA**: circulating α-klotho (pg/mL)
+
+The document:
+
+1.  Loads and recodes the clinical data and the KL SNPs
+2.  Loads the Klotho proteins from each platform and checks their distributions
+3.  Describes which participants are measured on which platform(s) and how they differ clinically
+4.  Transforms each measure (log2, z-scaled, and winsorized at the 1st/99th percentile) and saves the processed data to `Data_processed/`
+5.  Looks at correlation and quartile agreement between platforms
+6.  Describes Klotho in relation to age, key covariates, APOE4 carriage and the KL-VS haplotype
+
+Only one sample per participant is used (year 5). Results here are exploratory and are meant to guide the choices of exposure scale and covariates for the primary analysis (`02_primary_analysis.qmd`).
+
+# Setup
+
+```{r}
+#| message: false
+
+rm(list = ls())
+
+library(tidyverse)
+library(haven)
+library(gt)
+library(gtsummary)
+library(glue)
+library(writexl)
+library(readxl)
+library(ggpubr)
+library(data.table)
+library(R.utils)
+
+
+# Import data
+source('paths.R')
+```
+
+# Load and look at data
+
+## Clinical
+
+```{r}
+data_clin <- read_csv(file.path(data_path, 'Meineche_10237', 'Meineche_10237.csv'))
+
+data_clin_recoded <- data_clin %>%
+  mutate(
+    demclass = factor(demclass,
+                      levels = c(0, 1, 2, 3),
+                      labels = c("Normal", "Incident", "MCI", "Prevalent")),
+    
+    demtype = factor(demtype,
+                     levels = c(0, 1, 2, 3, 9),
+                     labels = c("Normal", "AD only", "Mixed", "VaD only", "Unknown")),
+    
+    stkyr5 = factor(stkyr5,
+                    levels = c(0, 1, 9),
+                    labels = c("No", "Yes", "Died over year ago")),
+    
+    chdyr5 = factor(chdyr5,
+                    levels = c(0, 1, 9),
+                    labels = c("No", "Yes", "Died over year ago")),
+    
+    gend01 = factor(gend01,
+                    levels = c(0, 1),
+                    labels = c("Female", "Male")),
+    
+    clinic = factor(clinic,
+                    levels = c(3, 4, 5, 6),
+                    labels = c("Bowman Gray", "Davis", "Hagerstown", "Pittsburgh")),
+    
+    hlth1_y5 = factor(hlth1_y5,
+                   levels = c(1, 2, 3, 4, 5),
+                   labels = c("Excellent", "Very good", "Good", "Fair", "Poor"),
+                   ordered = TRUE),  # remove ordered = TRUE if you don't want an ordinal factor
+    
+    perstat = factor(perstat,
+                     levels = c(1, 2),
+                     labels = c("Old cohort", "New cohort")),
+    
+    smoke_y5 = factor(smoke_y5,
+                   levels = c(1, 2, 3),
+                   labels = c("Never smoked", "Former smoker", "Current smoker")),
+    
+    race01 = factor(race01,
+                    levels = c(1, 2, 3, 4, 5),
+                    labels = c("White", "Black", "American Indian/Alaskan Native",
+                               "Asian/Pacific Islander", "Other")),
+    race01 = factor(
+      case_when(
+        race01 %in% c("American Indian/Alaskan Native", "Asian/Pacific Islander") ~ "Other",
+        TRUE ~ as.character(race01)
+      ),
+      levels = c("White", "Black", "Other")
+    ),
+    
+    hyper_y5 = factor(hyper_y5,
+                   levels = c(0, 1, 2),
+                   labels = c("Normal", "Borderline", "Hypertensive"),
+                   ordered = TRUE),  # remove ordered = TRUE if you don't want an ordinal factor
+    
+    estrgn_y5 = factor(estrgn_y5,
+                      levels = c(0, 1),
+                      labels = c("No", "Yes")),
+    
+    lipid_y5 = factor(lipid_y5,
+                     levels = c(0, 1),
+                     labels = c("No", "Yes")),
+    
+    grade01 = case_when(
+                    grade01 %in% 0:11  ~ "Less than high school",
+                    grade01 %in% 12:13 ~ "High school",
+                    grade01 %in% 14:21 ~ "College or above",
+                    grade01 == 99      ~ NA_character_,
+                    TRUE ~ NA_character_
+                  ),
+                  grade01 = factor(grade01,
+                                levels = c("Less than high school", 
+                                           "High school", 
+                                           "College or above"),
+                                      ordered = TRUE),
+    apoecvd = factor(apoecvd,
+                  levels = c(1, 2, 3, 4, 5, 6),
+                  labels = c("2,2", "2,3", "2,4", "3,3", "3,4", "4,4")),
+    apoe4 = case_when(
+      apoecvd == "3,4" | apoecvd == "4,4" ~ "Yes", 
+      is.na(apoecvd) ~ NA_character_, 
+      TRUE ~ 'No'
+    )
+  )
+
+write_csv(data_clin_recoded, 
+          file.path(data_path, 'Data_processed', 'Meineche_10237_recoded.csv'))
+```
+
+```{r}
+#| message: false
+
+library(gt)
+library(gtsummary)
+
+tbl_summary(data_clin_recoded %>%
+              select(
+                -c(
+                  starts_with('iqscore'), 
+                  starts_with('tics'), 
+                  starts_with('mmset'),
+                  starts_with('score'), 
+                  starts_with('digcor')
+                )
+                )
+            )
+```
+
+## SNPs
+
+```{r}
+data_snps <- read_csv(file.path(data_path, 'Meineche_10237', 'Klotho SNPs', 'CHSCC_TOPMedWGS_July2026_snps.csv'))
+```
+
+## SOMA
+
+```{r}
+
+
+data_soma_samples <- read.csv(file.path(data_path, 'Meineche_10237', '5K_Processed_ANML_Normalized', 'CHS_Samples_5K_ANML-Norm_2022_04.csv'))
+data_soma_markers <- read.csv(file.path(data_path, 'Meineche_10237', '5K_Processed_ANML_Normalized', 'CHS_Markers_5K_ANML-Norm_2022_04.csv'))
+data_soma_values <- read.csv(file.path(data_path, 'Meineche_10237', '5K_Processed_ANML_Normalized', 'CHS_Values_5K_ANML-Norm_2022_04.csv'))
+
+colnames(data_soma_values)[1:5]
+
+
+
+```
+
+```{r}
+# Find Klotho related proteins
+klot_ids_soma <- 'LCTL.10890.135|KL.15384.15|LB.19557.3'
+
+data_soma_markers_klot <- data_soma_markers %>% 
+  filter(grepl(klot_ids_soma, AptName)) %>% 
+  separate(AptName, into = c('Gene', 'AptNum'), sep = '\\.', remove = F, extra = 'merge') %>%
+  mutate(AptNum = str_c('X', AptNum))
+
+data_soma_values_klot <- data_soma_values %>%
+  select(c('idno', data_soma_markers_klot %>% pull(AptNum))) %>%
+  rename_with(
+    ~ data_soma_markers_klot$Gene[
+      match(.x, data_soma_markers_klot$AptNum)
+    ],
+    .cols = -idno
+  ) 
+```
+
+```{r}
+summary(data_soma_values_klot %>% select(-idno))
+```
+
+```{r}
+data_soma_values_klot %>%
+  pivot_longer(cols = -idno) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 50) +
+  facet_wrap(~name, scales = "free_x") + theme_minimal()
+```
+
+```{r}
+data_soma_values_klot %>%
+  pivot_longer(cols = -idno) %>%
+  ggplot(aes(y = value)) +
+  geom_boxplot() +
+  facet_wrap(~name, scales = "free_x") + 
+  theme_minimal()
+```
+
+Zoomed in view
+
+```{r}
+data_soma_values_klot %>%
+  filter(KL < 20000, KLB < 2000, LCTL < 3000) %>%
+  pivot_longer(cols = -idno) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 50) +
+  facet_wrap(~name, scales = "free_x") + 
+  theme_minimal()
+```
+
+```{r}
+rm(data_soma_values)
+
+```
+
+## Olink
+
+```{r}
+data_olink_samples <- read.csv(file.path(data_path, 'TOPmed Proteomics', 'Bridged minimal', 'CHS_TOPMed_Proteomics_Bridged_8542_samples_Info.csv')) %>%
+  filter(year==5) # filter to only year 5
+
+olink_SID <- data_olink_samples %>% pull(SID)
+
+nrow(data_olink_samples)
+head(data_olink_samples)
+
+# Marker information
+data_olink_markers <- read.csv(file.path(data_path, 'TOPmed Proteomics', 'Bridged minimal', 'CHS_TOPMed_Proteomics_Bridged_5420_proteins_Info.csv'))
+
+# Pull the OlinkIDs
+klot_ids_olink <- 'OID40362|OID43895|OID41238'
+
+data_olink_markers_klot <- data_olink_markers %>% 
+  filter(grepl(klot_ids_olink, OlinkID))
+
+data_olink_markers_klot
+```
+
+Load the data
+
+```{r}
+#| message: false
+
+
+data_olink_values_cols <- fread(
+  file.path(
+    data_path,
+    "TOPmed Proteomics",
+    "Bridged minimal",
+    "CHS_TOPMed_Proteomics_Bridged_8542_samples_5420proteins_Minimal.csv.gz"
+  ),
+  nrows = 0
+)
+
+
+# Read the unzipped CSV
+olink <- fread(  file.path(
+  data_path,
+  "TOPmed Proteomics",
+  "Bridged minimal",
+  "CHS_TOPMed_Proteomics_Bridged_8542_samples_5420proteins_Minimal.csv.gz"
+),)
+
+# Filter for OlinkIDs
+data_olink_klot <- olink[
+  grepl(klot_ids_olink, OlinkID)
+]
+
+# 4. Convert to regular dataframe if desired
+data_olink_values_klot <- as.data.frame(data_olink_klot) %>%
+  filter(grepl('_5', SID))
+
+
+rm(olink) 
+```
+
+```{r}
+data_olink_values_klot_wide <- data_olink_values_klot %>%
+  select(-NPX_below_LOD) %>%
+  pivot_wider(names_from = OlinkID, values_from = PCNormalizedNPX)%>%
+  rename_with(
+    ~ data_olink_markers$Assay[
+      match(.x, data_olink_markers$OlinkID)
+    ],
+    .cols = -c(SID)
+  )
+
+```
+
+```{r}
+summary(data_olink_values_klot_wide %>% select(-c(SID)))
+```
+
+```{r}
+data_olink_values_klot %>%
+  count(OlinkID, NPX_below_LOD) %>%
+  group_by(OlinkID) %>%
+  mutate(pct = round(n / sum(n) * 100, 1))
+
+data_olink_values_klot %>%
+  ggplot(aes(x = PCNormalizedNPX, fill = NPX_below_LOD)) +
+  geom_histogram(bins = 60, position = "identity", alpha = 0.6) +
+  facet_wrap(~OlinkID, scales = "free") +
+  theme_minimal()
+```
+
+```{r}
+data_olink_values_klot_wide %>%
+  pivot_longer(cols = -SID) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 50) +
+  facet_wrap(~name, scales = "free_x") + 
+  theme_minimal()
+```
+
+LCTL looks extremely odd. Might be due to:
+
+1.  A genetic variant
+2.  Batch or plate effect (not so likely as the otehrs look fine)
+3.  Filled-in value
+
+Genetic variants
+
+```{r}
+#| fig-width: 13
+#| fig-height: 15
+
+data_olink_values_klot_wide %>%
+  separate(SID, sep = '_', into = c('idno', 'year'))%>%
+  left_join(data_snps %>% mutate(idno=as.character(idno)), by ='idno') %>%
+  select(-c(idno, year, GBA3, KLB)) %>%
+  pivot_longer(cols = -LCTL, names_to = 'SNP', values_to = 'genotype') %>%
+  ggplot(aes(x = LCTL, fill = factor(genotype))) +
+  geom_histogram(bins = 60, position = "identity", alpha = 0.6) + 
+  facet_wrap(SNP~genotype, ncol=3, scales = 'free_y') + 
+  theme_minimal()
+```
+
+## ELISA
+
+```{r}
+data_elisa <- read_xlsx(file.path(data_path, 'Klotho measures', 'Cardiovasc_Health_final_results.xlsx')) %>%
+  rename(idno = `Sample ID`, klotho_elisa = `klotho(pg/mL)`) %>%
+  mutate(
+    klotho_elisa = case_when(
+      klotho_elisa == '>12600.000' ~ '12600',
+      TRUE ~ klotho_elisa),
+    idno=as.character(idno),
+    klotho_elisa=as.numeric(klotho_elisa)
+    ) 
+```
+
+```{r}
+
+data_elisa %>%
+  ggplot(aes(x=klotho_elisa)) + 
+  geom_histogram(binwidth = 50, color='darkgrey', fill='grey') + 
+  theme_minimal()
+
+```
+
+## Difference in participants
+
+### Make combined klot data!!
+
+```{r}
+values_klot <- full_join(
+  data_olink_values_klot_wide %>%
+    separate(SID, into = c('idno', 'yr'), sep = '_') %>%
+    select(-c(yr)) %>%
+    rename_with(~ paste0(.x, '_olink'), -idno), 
+  data_soma_values_klot %>%
+    rename_with(~ paste0(.x, '_soma'), -idno) %>%
+    mutate(idno = as.character(idno)),
+  by = 'idno'
+) %>%
+  full_join(data_elisa %>% 
+              mutate(klotho_elisa = as.numeric(klotho_elisa)
+              ), by='idno')
+```
+
+### Per participant
+
+```{r}
+
+olink_ids <-  data_olink_values_klot_wide %>%
+  separate(SID, into = c("idno", "yr"), sep = "_") %>% 
+  pull(idno)
+
+soma_ids <- data_soma_values_klot %>%
+  mutate(idno = as.character(idno)) %>%
+  pull(idno)
+
+elisa_ids <- data_elisa %>%
+  pull(idno)
+
+id_overlap <- Reduce(intersect, list(olink_ids, soma_ids, elisa_ids))
+
+cat(
+  glue(
+    "N individuals in Olink data: {length(olink_ids)}\n",
+    "N individuals in Soma data: {length(soma_ids)}\n", 
+    "N individuals in Elisa data: {length(elisa_ids)}\n", 
+    "N individuals in total: {nrow(values_klot)}\n", 
+    "N individuals ovarlapping, all three: {length(id_overlap)}\n"
+  )
+)
+```
+
+Look at how these differ
+
+```{r}
+#| fig-width: 15
+#| fig-height: 25
+
+
+
+values_klot <- values_klot %>%
+  mutate(
+    in_olink = idno %in% olink_ids,
+    in_soma  = idno %in% soma_ids,
+    in_elisa = idno %in% elisa_ids,
+    study_incl = case_when(
+      in_olink &  in_soma &  in_elisa ~ "Olink, Soma and ELISA",
+      in_olink &  in_soma & !in_elisa ~ "Olink and Soma",
+      in_olink & !in_soma &  in_elisa ~ "Olink and ELISA",
+      !in_olink &  in_soma &  in_elisa ~ "Soma and ELISA",
+      in_olink & !in_soma & !in_elisa ~ "Olink only",
+      !in_olink &  in_soma & !in_elisa ~ "Soma only",
+      !in_olink & !in_soma &  in_elisa ~ "ELISA only",
+      TRUE                            ~ "None"
+    )
+  ) %>%
+  select(-in_olink, -in_soma, -in_elisa)
+
+
+
+tbl_data <- bind_rows(
+  values_klot %>% filter(idno %in% olink_ids) %>% mutate(platform = "Olink"),
+  values_klot %>% filter(idno %in% soma_ids)  %>% mutate(platform = "Soma"),
+  values_klot %>% filter(idno %in% elisa_ids) %>% mutate(platform = "ELISA")
+) %>%
+  mutate(platform = factor(platform, levels = c("Olink", "Soma", "ELISA"))) %>%
+  left_join(
+    data_clin_recoded %>% mutate(idno = as.character(idno)),
+    by = "idno"
+  ) %>%
+  select(
+    -c(
+      idno,
+      study_incl,
+      starts_with("iqscore"),
+      starts_with("tics"),
+      starts_with("mmset"),
+      starts_with("score"),
+      starts_with("digcor"),
+      ends_with("olink"),
+      ends_with("soma"),
+      ends_with("elisa")
+    )
+  )
+
+tbl_summary(tbl_data, by = platform, missing = "ifany") 
+
+```
+
+# Data wrangling
+
+## Missingness
+
+```{r}
+#| message: false
+library(naniar)
+
+# Missingness in the clinical covariates that will go into the Aim 1-3 models
+# (excluding the cognitive test item-level columns, as in the summary table above)
+data_clin_recoded %>%
+  select(
+    -c(
+      starts_with('iqscore'),
+      starts_with('tics'),
+      starts_with('mmset'),
+      starts_with('score'),
+      starts_with('digcor')
+    )
+  ) %>%
+  vis_miss(warn_large_data = FALSE)
+```
+
+```{r}
+# Missingness in the joined Soma/Olink Klotho values, by platform overlap
+values_klot %>%
+  select(-idno) %>%
+  gg_miss_var(facet = study_incl)
+```
+
+## Distributions, transformations and outliers
+
+Klotho tends to be right-skewed. Worth comparing raw, log2- and winsorized versions side by side before deciding which scale(s) to carry forward, per the exposure coding plan (per-SD, per-doubling/log2, and winsorized as a sensitivity analysis at the 1st/99th percentile).
+
+### Soma
+
+```{r}
+# Are Soma klot log ?
+
+data_soma_values_klot %>%
+  pivot_longer(c(LCTL, KL, KLB), names_to = "protein", values_to = "x") %>%
+  group_by(protein) %>%
+  summarise(
+    n_neg  = sum(x < 0, na.rm = TRUE),
+    mean   = mean(x, na.rm = TRUE),
+    median = median(x, na.rm = TRUE),
+    sd     = sd(x, na.rm = TRUE),
+    min    = min(x, na.rm = TRUE),
+    max    = max(x, na.rm = TRUE)
+  )
+```
+
+```{r}
+#| fig-width: 15
+#| fig-height: 12
+#| 
+library(DescTools)
+
+data_soma_transformed <- data_soma_values_klot %>%
+  pivot_longer(cols = c(LCTL, KL, KLB), names_to = "protein", values_to = "raw") %>%
+  group_by(protein) %>%
+  mutate(
+    log2       = log2(raw),
+    scaled     = scale(log2),
+    winsorized = Winsorize(scaled, val = quantile(scaled, probs = c(0.01, 0.99), na.rm = TRUE)),
+    idno=as.character(idno)
+    )%>%
+  ungroup() %>%
+  pivot_longer(cols = c(raw, log2, scaled, winsorized), names_to = "scale", values_to = "value") %>%
+  mutate(scale = factor(scale, levels = c("raw", "log2", "scaled", "winsorized")),
+         value=as.numeric(value))
+
+data_soma_transformed %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 50) +
+  facet_grid(protein ~ scale, scales = "free") +
+  theme_minimal()
+```
+
+```{r}
+# Save
+
+data_soma_values_klot <- data_soma_values_klot %>% mutate(idno = as.character(idno))
+                                 
+write_xlsx(
+  list(values = data_soma_values_klot, 
+       values_log2 = data_soma_transformed %>% 
+         filter(scale =='log2') %>% 
+         select(-scale) %>% 
+         pivot_wider(names_from = protein, values_from = value), 
+       values_scaled = data_soma_transformed %>% 
+         filter(scale =='scaled') %>% 
+         select(-scale) %>%
+         pivot_wider(names_from = protein, values_from = value), 
+       values_win99 = data_soma_transformed %>% 
+         filter(scale =='winsorized') %>% 
+         select(-scale) %>% 
+         pivot_wider(names_from = protein, values_from = value), 
+       markers = data_soma_markers_klot),
+  path = file.path(data_path, "Data_processed", "soma_y5_klotho.xlsx")
+)
+```
+
+```{r}
+# How many values actually get pulled in by winsorizing at the 1st/99th pct?
+data_soma_transformed %>%
+  filter(scale %in% c("scaled", "winsorized")) %>%
+  pivot_wider(names_from = scale, values_from = value) %>%
+  group_by(protein) %>%
+  summarise(
+    n_winsorized_low  = sum(scaled < winsorized, na.rm = TRUE),
+    n_winsorized_high = sum(scaled > winsorized, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+### Olink
+
+```{r}
+# Are Olink klot log ?
+
+data_olink_values_klot_wide <- data_olink_values_klot_wide %>% 
+  separate(SID, sep = '_', into = c('idno', 'year')) %>%
+  select(-c(year))
+
+data_olink_values_klot_wide %>%
+  pivot_longer(c(LCTL, GBA3, KLB), names_to = "protein", values_to = "x") %>%
+  group_by(protein) %>%
+  summarise(
+    n_neg  = sum(x < 0, na.rm = TRUE),
+    mean   = mean(x, na.rm = TRUE),
+    median = median(x, na.rm = TRUE),
+    sd     = sd(x, na.rm = TRUE),
+    min    = min(x, na.rm = TRUE),
+    max    = max(x, na.rm = TRUE)
+  )
+```
+
+```{r}
+#| fig-width: 15
+#| fig-height: 12
+
+data_olink_transformed <- data_olink_values_klot_wide %>%
+  pivot_longer(cols = c(LCTL, GBA3, KLB), names_to = "protein", values_to = "log2") %>%
+  group_by(protein) %>%
+  mutate(
+    scaled     = scale(log2),
+    winsorized = Winsorize(scaled, val = quantile(scaled, probs = c(0.01, 0.99), na.rm = TRUE))
+  ) %>%
+  ungroup() %>%
+  pivot_longer(cols = c(log2, scaled, winsorized), names_to = "scale", values_to = "value") %>%
+  mutate(scale = factor(scale, levels = c("log2", "scaled", "winsorized")),
+         value=as.numeric(value))
+
+data_olink_transformed %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 50) +
+  facet_grid(protein ~ scale, scales = "free_x") +
+  theme_minimal()
+```
+
+```{r}
+
+write_xlsx(
+  list(values_log2 = data_olink_transformed %>% 
+         filter(scale =='log2') %>% 
+         select(-scale) %>% 
+         pivot_wider(names_from = protein, values_from = value), 
+       values_scaled = data_olink_transformed %>% 
+         filter(scale =='scaled') %>% 
+         select(-scale) %>%
+         pivot_wider(names_from = protein, values_from = value),
+       values_win99 = data_olink_transformed %>% 
+         filter(scale =='winsorized') %>% 
+         select(-scale) %>% 
+         pivot_wider(names_from = protein, values_from = value), 
+       markers = data_olink_markers_klot),
+  path = file.path(data_path, "Data_processed", "olink_y5_klotho.xlsx")
+)
+```
+
+```{r}
+# How many values actually get pulled in by winsorizing at the 1st/99th pct?
+data_olink_transformed %>%
+  filter(scale %in% c("scaled", "winsorized")) %>%
+  pivot_wider(names_from = scale, values_from = value) %>%
+  group_by(protein) %>%
+  summarise(
+    n_winsorized_low  = sum(scaled < winsorized, na.rm = TRUE),
+    n_winsorized_high = sum(scaled > winsorized, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+### ELISA
+
+```{r}
+
+data_elisa %>%
+  mutate(x = as.numeric(klotho_elisa)) %>%
+  summarise(
+    protein = "klot_elisa",
+    n_neg   = sum(x < 0, na.rm = TRUE),
+    mean    = mean(x, na.rm = TRUE),
+    median  = median(x, na.rm = TRUE),
+    sd      = sd(x, na.rm = TRUE),
+    min     = min(x, na.rm = TRUE),
+    max     = max(x, na.rm = TRUE)
+  )
+```
+
+```{r}
+#| fig-width: 15
+#| fig-height: 12
+
+data_elisa_transformed <- data_elisa %>%
+  mutate(
+    log2       = log2(klotho_elisa),
+    scaled     = scale(log2),
+    winsorized = Winsorize(scaled, val = quantile(scaled, probs = c(0.01, 0.99), na.rm = TRUE))
+  ) %>%
+  pivot_longer(cols = c(klotho_elisa, log2, scaled, winsorized), names_to = "scale", values_to = "value") %>%
+  mutate(scale = factor(scale, levels = c("klotho_elisa", "log2", 'scaled', "winsorized"))) %>%
+  mutate(value=as.numeric(value))
+
+data_elisa_transformed %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 50) +
+  facet_grid( ~ scale, scales = "free_x") +
+  theme_minimal()
+```
+
+```{r}
+
+write_xlsx(
+  list(values = data_elisa_transformed%>% 
+         filter(scale =='klotho_elisa') %>% 
+         select(-scale) %>%
+         rename(klot_elisa=value), 
+       values_log2 = data_elisa_transformed %>% 
+         filter(scale =='log2') %>% 
+         select(-scale) %>% 
+         rename(klot_elisa=value), 
+       values_scaled = data_elisa_transformed %>% 
+         filter(scale =='scaled') %>% 
+         select(-scale) %>% 
+         rename(klot_elisa=value), 
+       values_win99 = data_elisa_transformed %>% 
+         filter(scale =='winsorized') %>% 
+         select(-scale) %>% 
+         rename(klot_elisa=value)
+       ),
+  path = file.path(data_path, "Data_processed", "elisa_klotho.xlsx")
+)
+```
+
+```{r}
+data_elisa_transformed %>%
+  filter(scale %in% c("scaled", "winsorized")) %>%
+  pivot_wider(id_cols = idno, names_from = scale, values_from = value) %>%
+  summarise(
+    n                 = sum(!is.na(scaled)),
+    n_winsorized_low  = sum(scaled < winsorized, na.rm = TRUE),
+    p_winsorized_low  = round(n_winsorized_low  / n * 100, 3),
+    n_winsorized_high = sum(scaled > winsorized, na.rm = TRUE),
+    p_winsorized_high = round(n_winsorized_high / n * 100, 3)
+  )
+```
+
+### Make combined data scaled
+
+```{r}
+values_klot_scaled <- full_join(
+  data_soma_transformed %>%
+    filter(scale=='scaled') %>%
+    pivot_wider(names_from = protein, values_from = value) %>%
+    select(-scale) %>%
+    rename_with(~ paste0(.x, '_soma'), -idno),
+  data_olink_transformed %>%
+    filter(scale=='scaled') %>%
+    pivot_wider(names_from = protein, values_from = value) %>%
+    select(-scale) %>%
+    rename_with(~ paste0(.x, '_olink'), -idno),
+  by = 'idno'
+) %>%
+  full_join(
+    data_elisa_transformed%>%
+      filter(scale=='scaled') %>%
+      select(-scale) %>%
+      rename(klotho_elisa = value),
+    by = 'idno'
+  )
+```
+
+```{r}
+values_klot_win <- full_join(
+  data_soma_transformed %>%
+    filter(scale=='winsorized') %>%
+    pivot_wider(names_from = protein, values_from = value) %>%
+    select(-scale) %>%
+    rename_with(~ paste0(.x, '_soma'), -idno),
+  data_olink_transformed %>%
+    filter(scale=='winsorized') %>%
+    pivot_wider(names_from = protein, values_from = value) %>%
+    select(-scale) %>%
+    rename_with(~ paste0(.x, '_olink'), -idno),
+  by = 'idno'
+) %>%
+  full_join(
+    data_elisa_transformed%>%
+      filter(scale=='winsorized') %>%
+      select(-scale) %>%
+      rename(klotho_elisa = value),
+    by = 'idno'
+  )
+```
+
+# Correlation
+
+Scaled
+
+```{r}
+#| message: false
+#| warning: false
+#| fig-width: 15
+#| fig-height: 12
+
+library(GGally)
+
+corr_plot <- ggpairs(values_klot_scaled %>%
+          select(-c(idno))) + 
+  theme_minimal()
+
+corr_plot
+
+ggsave(
+  "klotho_pairwise_log2_zscaled.png",
+  plot = corr_plot,
+  width = 15,
+  height = 12,
+  units = "in",
+  dpi = 300
+)
+```
+
+Winsorized
+
+```{r}
+#| message: false
+#| warning: false
+#| fig-width: 15
+#| fig-height: 12
+corr_plot <- ggpairs(values_klot_win %>%
+                       select(-c(idno))) + 
+  theme_minimal()
+
+corr_plot
+
+ggsave(
+  "klotho_pairwise_log2_zscaled_win.png",
+  plot = corr_plot,
+  width = 15,
+  height = 12,
+  units = "in",
+  dpi = 300
+)
+```
+
+# Descriptive analysis
+
+## Klotho vs. age
+
+Circulating Klotho is reported to decline with age. Worth checking this holds in CHS before interpreting any Klotho-cognition association, since age is a key confounder in every model.
+
+Plots against the log2 transformed and z-scaled protein data.
+
+```{r}
+#| message: false
+#| warning: false
+#| fig-width: 15
+#| fig-height: 12
+
+values_klot_scaled %>%
+  left_join(data_clin_recoded %>% 
+              mutate(idno=as.character(idno)) %>%
+              select(c(idno, age_y5)), 
+            by = "idno") %>%
+  pivot_longer(cols = -c(idno, age_y5), names_to = "protein", values_to = "value") %>%
+  ggplot(aes(x = age_y5, y = value)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "loess") +
+  stat_cor(
+    aes(label = after_stat(paste(rr.label, p.label, sep = "~`,`~"))),
+    method = "pearson"
+  ) +
+  facet_wrap(~protein, scales = "free") +
+  theme_minimal()
+```
+
+## Concordance across platforms
+
+The proposal's planned secondary analysis compares ELISA/Olink/SomaScan Klotho via Spearman correlation and quartile agreement - a first look here.
+
+```{r}
+library(corrplot)
+
+# Spearman rather than Pearson, given the skew above
+data_ <- values_klot_scaled %>%
+  select(-c(idno)) 
+
+data_%>%
+  cor(use = "pairwise.complete.obs", method = "spearman") %>%
+  corrplot(
+    method = "color",
+    type = "lower",
+    addCoef.col = "black",
+    tl.col = "black",
+    tl.srt = 45,
+    number.cex = 0.8
+  )
+```
+
+```{r}
+# ELISA vs each Olink/Soma protein, using everyone who has both measures
+values_klot_scaled %>%
+  pivot_longer(cols = -c(idno, klotho_elisa), names_to = "protein", values_to = "value") %>%
+  filter(!is.na(value), !is.na(klotho_elisa)) %>%
+  group_by(protein) %>%
+  summarise(
+    n   = n(),
+    rho = cor(klotho_elisa, value, method = "spearman"),
+    p   = cor.test(klotho_elisa, value, method = "spearman", exact = FALSE)$p.value
+  )
+```
+
+```{r}
+# ELISA vs Soma KL (both alpha-klotho)
+values_klot_scaled %>%
+  filter(!is.na(KL_soma), !is.na(klotho_elisa)) %>%
+  ggplot(aes(x = klotho_elisa, y = KL_soma)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm") +
+  stat_cor(
+    aes(label = after_stat(paste(rr.label, p.label, sep = "~`,`~"))),
+    method = "pearson"
+  ) +
+  theme_minimal()
+```
+
+### Quartile cross-tabulation
+
+```{r}
+# Quartile cross-tabulation: how often do Soma and Olink put the same person
+# in the same quartile, for the same protein?
+# Each protein is restricted to participants with both measures before cutting quartiles
+klotho_quartiles <- map_dfr(c("LCTL", "KLB"), ~ values_klot_scaled %>%
+                              select(idno, soma = all_of(paste0(.x, "_soma")), olink = all_of(paste0(.x, "_olink"))) %>%
+                              filter(!is.na(soma), !is.na(olink)) %>%
+                              mutate(
+                                protein = .x,
+                                soma_q  = ntile(soma, 4),
+                                olink_q = ntile(olink, 4)
+                              )
+)
+
+# Cross-tabulation per protein
+klotho_quartiles %>%
+  count(protein, soma_q, olink_q) %>%
+  pivot_wider(names_from = olink_q, values_from = n, values_fill = 0, names_prefix = "olink_q")
+
+# % of participants landing in the exact same quartile / within one quartile
+klotho_quartiles %>%
+  group_by(protein) %>%
+  summarise(
+    n             = n(),
+    pct_exact     = round(mean(soma_q == olink_q) * 100, 1),
+    pct_within_1  = round(mean(abs(soma_q - olink_q) <= 1) * 100, 1),
+    pct_opposite  = round(mean(abs(soma_q - olink_q) == 3) * 100, 1)
+  )
+```
+
+```{r}
+#| fig-width: 12
+#| fig-height: 6
+
+# Heatmap of the cross-tabulation, % of participants within each Soma quartile
+klotho_quartiles %>%
+  count(protein, soma_q, olink_q) %>%
+  group_by(protein, soma_q) %>%
+  mutate(pct = round(n / sum(n) * 100)) %>%
+  ggplot(aes(x = factor(olink_q), y = factor(soma_q), fill = pct)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = glue("{n}\n({pct}%)")), size = 3.5) +
+  scale_fill_gradient(low = "white", high = "darkred",limits = c(0, 100)) +
+  facet_wrap(~protein) +
+  labs(x = "Olink quartile", y = "Soma quartile", fill = "% of Soma\nquartile") +
+  theme_minimal()
+```
+
+**KLB.** The diagonal is 41%, 27%, 27% and 39%, so about 33% of people land in the same quartile on both platforms, against 25% by chance. There's a clear gradient in the right direction, and the corners (Q1–Q4 and Q4–Q1) are down to 12–13%, about half of chance. The platforms mostly agree at the extremes: people with very low or very high KLB on one platform tend to be low or high on the other too. In the middle quartiles (27%) they barely agree. This pattern usually means a correlation of roughly 0.2–0.3, so the same signal is there, but with a lot of noise.
+
+**LCTL.** Every cell is 21–28%, which is what you'd expect if the two platforms were ranked independently. There's no sign that Olink and SomaScan are measuring the same thing for LCTL. That fits with the odd LCTL distribution and the values below LOD you found in Olink. The Olink LCTL values may be mostly noise, or the two assays may detect different forms of the protein.
+
+Best case scenario would be 100% on the diaginals and 0% on off-diagonals, which is probably never likely.
+
+```{r}
+#| fig-width: 12
+#| fig-height: 6
+
+# Scatter of the underlying (log2, z-scaled) values
+klotho_quartiles %>%
+  ggplot(aes(x = olink, y = soma)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm") +
+  stat_cor(method = "spearman") +
+  facet_wrap(~protein) +
+  labs(x = "Olink (log2, z-scaled)", y = "Soma (log2, z-scaled)") +
+  theme_minimal()
+```
+
+```{r}
+# Same for ELISA vs Soma KL
+klotho_quartiles_elisa <- values_klot_scaled %>%
+  filter(!is.na(KL_soma), !is.na(klotho_elisa)) %>%
+  mutate(
+    KL_soma_q       = ntile(KL_soma, 4),
+    klotho_elisa_q  = ntile(klotho_elisa, 4)
+  )
+
+klotho_quartiles_elisa %>%
+  count(KL_soma_q, klotho_elisa_q) %>%
+  pivot_wider(names_from = klotho_elisa_q, values_from = n, values_fill = 0, names_prefix = "elisa_q")
+
+klotho_quartiles_elisa %>%
+  summarise(
+    n            = n(),
+    pct_agree_KL = mean(KL_soma_q == klotho_elisa_q, na.rm = TRUE)
+  )
+```
+
+## Covariate patterns across Klotho levels
+
+A quick look at whether key covariates differ across Klotho tertiles - useful for spotting likely confounders/effect modifiers before finalizing Model 1/2.
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| results: asis
+
+for (klot_var in colnames(values_klot_scaled %>% select(-c(idno)))) {
+  
+  tbl <- values_klot_scaled %>%
+    left_join(
+      data_clin_recoded %>%
+        mutate(idno = as.character(idno)),
+      by = "idno"
+    ) %>%
+    filter(!is.na(.data[[klot_var]])) %>%
+    mutate(
+      tertile = ntile(.data[[klot_var]], 3) %>%
+        factor(labels = c("Low", "Mid", "High"))
+    ) %>%
+    select(
+      tertile,
+      gend01,
+      race01,
+      clinic,
+      grade01,
+      smoke_y5,
+      hyper_y5,
+      estrgn_y5,
+      lipid_y5,
+      apoecvd
+    ) %>%
+    tbl_summary(
+      by = tertile,
+      missing = "ifany"
+    ) %>%
+    add_p()
+  
+  cat("\n\n### ", klot_var, "\n\n", sep = "")
+  
+  print(tbl)
+}
+```
+
+## APOE4 carriage and KL-VS haplotype
+
+```{r}
+# APOE4 carrier flag from the recoded genotype factor
+data_clin_recoded %>%
+  mutate(apoe4_carrier = case_when(is.na(apoecvd) ~ NA_character_,
+                                   grepl("4", apoecvd) ~ "Carrier",
+                                   TRUE ~ "Non-carrier")) %>%
+  count(apoecvd, apoe4_carrier)
+```
+
+```{r}
+# KL-VS haplotype SNPs 
+snp_mat <- data_snps %>%
+  pivot_longer(cols = -idno, names_to = "snp", values_to = "genotype") %>%
+  count(snp, genotype) 
+
+print(snp_mat%>% 
+        pivot_wider(values_from = n, names_from = genotype)
+)
+
+snp_mat %>%
+  ggplot(., aes(x=genotype, y=snp, fill=n)) + 
+  geom_tile() + 
+  geom_text(aes(label=n)) + 
+  scale_fill_gradient(low = "white", high = "darkred") +
+  theme_minimal()
+```
+
+```{r}
+# ELISA klotho (log2) by APOE4 carriage
+data_elisa %>%
+  left_join(data_clin_recoded %>% mutate(idno=as.character(idno)), by = "idno") %>%
+  mutate(apoe4_carrier = if_else(grepl("4", apoecvd), "Carrier", "Non-carrier")) %>%
+  ggplot(aes(x = apoe4_carrier, y = log2(klotho_elisa))) +
+  geom_boxplot() +
+  theme_minimal()
+```
+
+```{r}
+#| fig-width: 13
+#| fig-height: 8
+
+# ELISA klotho (log2) by KL SNP genotype
+data_elisa %>%
+  left_join(data_snps %>% mutate(idno=as.character(idno)), by = "idno") %>%
+  pivot_longer(cols = -c(idno, klotho_elisa), names_to = "snp", values_to = "genotype") %>%
+  filter(!is.na(genotype)) %>%
+  ggplot(aes(x = factor(genotype), y = log2(klotho_elisa))) +
+  geom_boxplot() +
+  facet_wrap(~snp) +
+  theme_minimal()
+```

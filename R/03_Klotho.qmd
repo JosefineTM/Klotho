@@ -1,0 +1,1586 @@
+---
+title: "Klotho, dementia, cognition and genetics in CHS"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    html-math-method: katex
+    grid:
+      body-width: 1200px
+---
+
+# Introduction
+
+This notebook analyses plasma α-Klotho measured at CHS Year 5. The measurement method (e.g. ELISA, SOMA, Olink) is set by `measure_method` in Setup, and all output goes to a folder named after it.
+
+- **Descriptives:** baseline characteristics (Table 1), characteristics by klotho tertile (Table 2), and klotho levels by APOE genotype and by prevalent dementia.
+- **Aim 1:** klotho and incident dementia (Cox models).
+- **Aim 2:** klotho and cognitive trajectories, 3MSE and DSST (linear mixed models).
+- **Aim 3:** genetic variants in *KL* and klotho levels, including the KL-VS haplotype and its association with dementia.
+
+All output is written to `data_path/Analysis/measurement method/`:
+
+| Folder | Content |
+|:----------------------|:------------------------------------------------|
+| `01_descriptives/` | Tables 1–2, boxplots and APOE comparisons |
+| `02_cox_dementia/` | Cox models, one folder per `<outcome>/<covariate set>/` |
+| `03_lmm_cognition/` | Mixed models, one folder per `<test>/<covariate set>/` |
+| `04_genetics/` | SNP analyses, with KL-VS results in `klvs/` |
+
+# Setup
+
+## Packages and paths
+
+`paths.R` defines `data_path`.
+
+```{r}
+#| message: false
+
+rm(list = ls())
+
+library(tidyverse)
+library(readxl)
+library(writexl)
+library(glue)
+library(gt)
+library(gtsummary)
+library(ggpubr)
+library(ggVennDiagram)
+library(patchwork)
+library(survival)
+library(ggsurvfit)
+library(broom)
+library(lme4)
+library(lmerTest)
+library(broom.mixed)
+library(ggeffects)
+library(DiagrammeR)
+library(DiagrammeRsvg)
+library(rsvg)
+
+
+source("paths.R")
+source("forest_lmm.R")   # plot_forest_lmm(), used to combine the mixed-model results
+
+measure_method = 'ELISA'
+
+dir_out   <- file.path(data_path, "Analysis", measure_method)
+dir_desc  <- file.path(dir_out, "01_descriptives")
+dir_cox   <- file.path(dir_out, "02_cox_dementia")
+dir_lmm   <- file.path(dir_out, "03_lmm_cognition")
+dir_gen   <- file.path(dir_out, "04_genetics")
+dir_klvs  <- file.path(dir_gen, "klvs")
+
+walk(c(dir_desc, dir_cox, dir_lmm, dir_gen, dir_klvs),
+     dir.create, recursive = TRUE, showWarnings = FALSE)
+```
+
+**Measurement method:** `r measure_method`
+
+## Covariate sets
+
+Each model adds covariates to the previous one.
+
+- `cov_m0`: crude (exposure only)
+- `cov_m1`: demographics, kidney function, clinic, education and APOE ε4
+- `cov_m2`: Model 1 + cardiovascular risk factors and lifestyle
+- `cov_m3`: Model 2 + CRP, depressive symptoms, self-rated health and estrogen use
+
+```{r}
+cov_m0 <- c()
+cov_m1 <- c("age_y5", "gend01", "egfr_y5", "race01", "clinic", "grade01", "apoe4")
+cov_m2 <- c(cov_m1, "bmi_y5", "smoke_y5", "alcoh_y5", "kcal_y5",
+            "avesys_y5", "htnmed_y5", "prevdm_y5", "ldl_y5", "hdl_y5",
+            "lipid_y5", "chdyr5", "stkyr5")
+cov_m3 <- c(cov_m2, "crp_y5", "depscr_y5", "hlth1_y5", "estrgn_y5")
+
+# NOTE: cov_m05 is used in Aim 3 (KL-VS) but is not defined here yet.
+# cov_m05 <- c(...)
+```
+
+## Labels
+
+Readable names for model terms (forest plots) and for covariates (adjustment descriptions).
+
+```{r}
+term_labels <- c(
+  klot_value                     = "Klotho (per SD log2)",
+  `KL_VSHet+`                    = "KL-VS heterozygous (vs non-heterozygous)",
+  age_y5                         = "Age (per year)",
+  gend01Male                     = "Male sex",
+  egfr_y5                        = "eGFR (per mL/min/1.73 m²)",
+  race01Black                    = "Race: Black (vs White)",
+  race01Other                    = "Race: Other (vs White)",
+  clinicDavis                    = "Center: Davis",
+  clinicHagerstown               = "Center: Hagerstown",
+  clinicPittsburgh               = "Center: Pittsburgh",
+  `grade01Less than high school` = "Less than high school",
+  apoe4Yes                       = "APOE ε4 carrier",
+  bmi_y5                         = "BMI (per kg/m²)",
+  alcoh_y5                       = "Alcohol (per drink/week)",
+  kcal_y5                        = "Physical activity (per kcal/week)",
+  avesys_y5                      = "Systolic BP (per mmHg)",
+  htnmed_y5                      = "Antihypertensive medication",
+  prevdm_y5                      = "Diabetes",
+  ldl_y5                         = "LDL cholesterol (per mg/dL)",
+  hdl_y5                         = "HDL cholesterol (per mg/dL)",
+  lipid_y5Yes                    = "Lipid-lowering medication",
+  chdyr5Yes                      = "Prevalent CHD",
+  stkyr5Yes                      = "Prevalent stroke",
+  crp_y5Yes                      = "CRP (per mg/L)",
+  depscr_y5                      = "CES-D score (per point)",
+  estrgn_y5Yes                   = "Estrogen use",
+  `smoke_y5Former smoker`        = "Smoking: former",
+  `smoke_y5Never smoked`         = "Smoking: never"
+)
+
+cov_labels <- c(
+  age_y5 = "age", gend01 = "sex", race01 = "race", egfr_y5 = "eGFR",
+  clinic = "clinic", grade01 = "education", apoe4 = "APOE ε4",
+  bmi_y5 = "BMI", smoke_y5 = "smoking", alcoh_y5 = "alcohol", kcal_y5 = "physical activity",
+  avesys_y5 = "systolic BP", htnmed_y5 = "antihypertensives", prevdm_y5 = "diabetes",
+  ldl_y5 = "LDL", hdl_y5 = "HDL", lipid_y5 = "lipid-lowering drugs",
+  chdyr5 = "prevalent CHD", stkyr5 = "prevalent stroke",
+  crp_y5 = "CRP", depscr_y5 = "CES-D", hlth1_y5 = "self-rated health", estrgn_y5 = "estrogen use"
+)
+nice_cov <- function(x) coalesce(unname(cov_labels[x]), x)   # unknown names stay as they are
+```
+
+## Functions
+
+**Formatting and forest plots.** `format_forest()` adds labels, the estimate with 95% CI, and formatted p-values to a model results table. `plot_forest_hr()` draws hazard ratios on a log scale (Cox models); `plot_forest_coef()` draws linear estimates (mixed models).
+
+```{r}
+fmt_p <- function(p) if_else(p < 0.001, "< 0.001", sprintf("= %.3f", p))
+
+format_forest <- function(results, est = "HR", drop_terms = character(0)) {
+  results %>%
+    filter(!term %in% drop_terms) %>%
+    mutate(
+      label  = coalesce(term_labels[term], term),           # unknown terms keep their raw name
+      label  = factor(label, levels = rev(unique(label))),  # keep model order, top to bottom
+      est_ci = sprintf("%.2f (%.2f–%.2f)", .data[[est]], lo, hi),
+      p_lab  = if_else(p < 0.001, "<0.001", sprintf("%.3f", p))
+    )
+}
+
+plot_forest_hr <- function(data_plot) {
+  ggplot(data_plot, aes(x = HR, y = label)) +
+    geom_vline(xintercept = 1, linetype = "dashed", colour = "grey50") +
+    geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0.2, colour = "#2171B5") +
+    geom_point(size = 2.5, colour = "#2171B5") +
+    geom_text(aes(x = max(hi) * 1.3, label = paste0(est_ci, "   p = ", p_lab)),
+              hjust = 0, size = 3.2) +
+    scale_x_log10(expand = expansion(mult = c(0.05, 0.9))) +
+    labs(x = "Hazard ratio (95% CI), log scale", y = NULL) +
+    theme_minimal(base_size = 12) +
+    theme(panel.grid.minor = element_blank())
+}
+
+plot_forest_coef <- function(data_plot, title) {
+  ggplot(data_plot, aes(x = estimate, y = label)) +
+    geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0.2, colour = "#2171B5") +
+    geom_point(size = 2.5, colour = "#2171B5") +
+    geom_text(aes(x = Inf, label = paste0(est_ci, "   p = ", p_lab)),
+              hjust = 0, size = 3.2) +
+    coord_cartesian(clip = "off") +
+    labs(x = "Estimate (95% CI)", y = NULL, title = title) +
+    theme_minimal(base_size = 12) +
+    theme(panel.grid.minor = element_blank(),
+          plot.margin = margin(5.5, 170, 5.5, 5.5))   # right margin for the text
+}
+```
+
+**Cox model.** `run_cox()` fits
+
+$$\text{Surv}(\text{yearsfu}, \text{outcome}) \sim \text{exposure} + \text{covariates}$$
+
+with robust standard errors, and saves to `<out_dir>/<outcome>/<model_name>/`:
+
+- the model summary and a table of hazard ratios, model fit (N, events, C-index, AIC) and the proportional hazards test (`Cox_results.xlsx`),
+- the Schoenfeld residual plot for the exposure (flat line = constant HR over time),
+- for a numeric exposure, a penalised spline model where the `nonlin` row tests departure from linearity.
+
+`save_forest_cox()` draws the forest plot of all terms and saves it in the same folder.
+
+```{r}
+run_cox <- function(
+    outcome,
+    covar,
+    data                 = data_combined_aim1,
+    variable_of_interest = "klot_value",
+    model_name           = deparse(substitute(covar)),
+    out_dir              = dir_cox
+) {
+  
+  save_dir <- file.path(out_dir, outcome, model_name)
+  dir.create(save_dir, recursive = TRUE, showWarnings = FALSE)
+  message(glue("\n========== {outcome} – {model_name} =========="))
+  message(glue("Saving to {save_dir}"))
+  
+  is_num <- is.numeric(data[[variable_of_interest]])
+  
+  # ---- main model ----
+  modelForm <- as.formula(
+    paste0("Surv(yearsfu, ", outcome, ") ~ ",
+           paste(c(variable_of_interest, covar), collapse = " + "))
+  )
+  message(glue("Formula: {deparse1(modelForm)}"))
+  
+  fit <- coxph(modelForm, data = data, id = idno, robust = TRUE)
+  message(glue("N = {fit$n}, events = {fit$nevent}"))
+  print(fit)
+  capture.output(summary(fit), file = file.path(save_dir, "cox_summary.txt"))
+  
+  results <- tidy(fit, exponentiate = TRUE, conf.int = TRUE) %>%
+    select(term, HR = estimate, lo = conf.low, hi = conf.high, p = p.value)
+  print(results)
+  
+  model_info <- glance(fit) %>%
+    select(n, nevent, concordance, std.error.concordance, AIC)
+  print(model_info)
+  
+  # ---- proportional hazards ----
+  zph <- cox.zph(fit)
+  print(zph)                                       # p < 0.05 = PH violated
+  zph_tab <- as.data.frame(zph$table) %>% rownames_to_column("term")
+  
+  draw_zph <- function() {
+    plot(zph, var = variable_of_interest,
+         main = glue("Schoenfeld residuals – {model_name}"))
+    if (is_num) abline(h = coef(fit)[variable_of_interest], lty = 2, col = "red")
+  }
+  draw_zph()
+  png(file.path(save_dir, "ph_schoenfeld.png"), width = 7, height = 5, units = "in", res = 300)
+  draw_zph()
+  dev.off()
+  
+  # ---- linearity (numeric exposure only) ----
+  fit_spl <- NULL
+  if (is_num) {
+    fit_spl <- coxph(
+      as.formula(paste0("Surv(yearsfu, ", outcome, ") ~ ",
+                        paste(c(glue("pspline({variable_of_interest}, df = 3)"), covar),
+                              collapse = " + "))),
+      data = data
+    )
+    print(fit_spl)                                 # "nonlin" row tests departure from linearity
+    capture.output(print(fit_spl), file = file.path(save_dir, "spline_summary.txt"))
+    
+    draw_spl <- function() {
+      termplot(fit_spl, term = 1, se = TRUE, rug = TRUE,
+               ylabs = "log HR", xlabs = variable_of_interest,
+               main = glue("Spline – {model_name}"))
+    }
+    draw_spl()
+    png(file.path(save_dir, "spline_termplot.png"), width = 7, height = 5, units = "in", res = 300)
+    draw_spl()
+    dev.off()
+  }
+  
+  # ---- save tables ----
+  write_xlsx(
+    x    = list(HR = results, model_info = model_info, PH_test = zph_tab),
+    path = file.path(save_dir, "Cox_results.xlsx")
+  )
+  
+  invisible(list(fit = fit, results = results, model_info = model_info,
+                 zph = zph, fit_spl = fit_spl, save_dir = save_dir))
+}
+
+save_forest_cox <- function(res, drop_terms = character(0), ...) {
+  p <- res$results %>%
+    format_forest("HR", drop_terms) %>%
+    plot_forest_hr()
+  ggsave(file.path(res$save_dir, "forest.png"), p, bg = "white", ...)
+  p
+}
+```
+
+**Linear mixed model.** `run_lmm()` fits
+
+$$\text{score} \sim \text{klotho} \times \text{time} + \text{covariates} + (1 + \text{time} \mid \text{idno})$$
+
+with `time` = years since Year 5 and a random intercept and slope per participant. The two key terms are `klot_value` (difference in score at Year 5) and `klot_value:time` (difference in yearly change). It also plots predicted trajectories at the 10th, 50th and 90th percentiles of klotho and residual diagnostics, and saves everything to `03_lmm_cognition/<outcome>/<model_name>/`.
+
+`run_lmm_models()` runs the full set of models for one cognitive test (Models 0–3 and Model 1 stratified by APOE ε4), and saves a forest plot of all terms for each.
+
+```{r}
+run_lmm <- function(
+    outcome       = "score134",
+    covar,
+    ids,
+    data          = data_clin_long,
+    baseline_year = 5,
+    model_name    = deparse(substitute(covar)),
+    out_dir       = dir_lmm
+) {
+  
+  save_dir <- file.path(out_dir, outcome, model_name)
+  dir.create(save_dir, recursive = TRUE, showWarnings = FALSE)
+  message(glue("\n========== {outcome} – {model_name} =========="))
+  message(glue("Saving to {save_dir}"))
+  
+  # ---- data: from baseline onwards, time since Year 5 ----
+  data <- data %>%
+    filter(idno %in% ids, year >= baseline_year) %>%
+    mutate(time = year - baseline_year) %>%
+    drop_na(all_of(c(outcome, "klot_value", covar)))
+  
+  n_ids <- n_distinct(data$idno)
+  n_obs <- nrow(data)
+  message(glue("N persons = {n_ids}, N observations = {n_obs} ({round(n_obs / n_ids, 1)} per person)"))
+  
+  # ---- model ----
+  modelForm <- as.formula(
+    paste(outcome, "~",
+          paste(c("klot_value * time", covar, "(1 + time | idno)"), collapse = " + "))
+  )
+  message(glue("Formula: {deparse1(modelForm)}"))
+  
+  fit <- lmerTest::lmer(modelForm, data = data)
+  print(summary(fit))
+  capture.output(summary(fit), file = file.path(save_dir, "lmm_summary.txt"))
+  
+  results <- tidy(fit, effects = "fixed", conf.int = TRUE) %>%
+    select(term, estimate, lo = conf.low, hi = conf.high, p = p.value)
+  print(results)
+  
+  random_eff <- as.data.frame(VarCorr(fit))
+  print(random_eff)
+  
+  model_info <- tibble(
+    n_ids, n_obs, obs_per_id = n_obs / n_ids,
+    AIC = AIC(fit), BIC = BIC(fit), singular = isSingular(fit)
+  )
+  print(model_info)
+  if (isSingular(fit)) message("WARNING: singular fit – random slope variance may be ~0")
+  
+  # ---- key result ----
+  key <- results %>% filter(term %in% c("klot_value", "time", "klot_value:time"))
+  message("Key terms (klot_value = level at Y5, klot_value:time = difference in yearly change):")
+  print(key)
+  
+  # ---- predicted trajectories at 10th / 50th / 90th percentile of klotho ----
+  q    <- round(quantile(data$klot_value, c(0.10, 0.50, 0.90)))
+  pred <- ggpredict(fit, terms = c("time", glue("klot_value [{paste(q, collapse = ',')}]")))
+  
+  p_traj <- as_tibble(pred) %>%
+    mutate(group = factor(group, labels = c("10th pct", "Median", "90th pct"))) %>%
+    ggplot(aes(x = x + baseline_year, y = predicted, colour = group, fill = group)) +
+    geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.15, colour = NA) +
+    geom_line(linewidth = 1) +
+    scale_colour_manual(values = c("#C6DBEF", "#6BAED6", "#2171B5"), name = "Klotho") +
+    scale_fill_manual(values   = c("#C6DBEF", "#6BAED6", "#2171B5"), name = "Klotho") +
+    labs(title    = glue("Predicted {outcome} by klotho – {model_name}"),
+         subtitle = glue("Klotho × time p = {signif(key$p[key$term == 'klot_value:time'], 2)}"),
+         x = "CHS study year", y = glue("Predicted {outcome}")) +
+    theme_minimal(base_size = 12)
+  print(p_traj)
+  ggsave(file.path(save_dir, "trajectories.png"), p_traj, width = 7, height = 5, dpi = 300, bg = "white")
+  
+  # ---- diagnostics ----
+  diag_df <- tibble(fitted = fitted(fit), resid = resid(fit))
+  p_diag <-
+    (ggplot(diag_df, aes(fitted, resid)) +
+       geom_point(alpha = 0.15, size = 0.6) +
+       geom_hline(yintercept = 0, linetype = "dashed") +
+       geom_smooth(method = "loess", formula = y ~ x, colour = "#2171B5") +
+       labs(title = "Residuals vs fitted", x = "Fitted", y = "Residual") +
+       theme_minimal()) +
+    (ggplot(diag_df, aes(sample = resid)) +
+       stat_qq(alpha = 0.15, size = 0.6) + stat_qq_line(colour = "#2171B5") +
+       labs(title = "Normal QQ plot of residuals") +
+       theme_minimal())
+  print(p_diag)
+  ggsave(file.path(save_dir, "diagnostics.png"), p_diag, width = 10, height = 4.5, dpi = 300, bg = "white")
+  
+  # ---- save tables ----
+  write_xlsx(
+    x = list(fixed = results, random = random_eff, model_info = model_info),
+    path = file.path(save_dir, "LMM_results.xlsx")
+  )
+  
+  invisible(list(fit = fit, results = results, key = key,
+                 random = random_eff, model_info = model_info, data = data,
+                 save_dir = save_dir))
+}
+
+save_forest_lmm <- function(res, title) {
+  p <- res$results %>%
+    format_forest("estimate", drop_terms = "(Intercept)") %>%
+    plot_forest_coef(title)
+  ggsave(file.path(res$save_dir, "forest.png"), p, bg = "white")
+  p
+}
+
+run_lmm_models <- function(outcome, ids, test_label) {
+  
+  cov_m1_noapoe <- setdiff(cov_m1, "apoe4")
+  
+  res <- list(
+    m0 = run_lmm(outcome, cov_m0, ids, model_name = "cov_m0"),
+    m1 = run_lmm(outcome, cov_m1, ids, model_name = "cov_m1"),
+    m1_apoe4_carriers    = run_lmm(outcome, cov_m1_noapoe, ids,
+                                   data = data_clin_long %>% filter(apoe4 == "Yes"),
+                                   model_name = "cov_m1_apoe4_carriers"),
+    m1_apoe4_noncarriers = run_lmm(outcome, cov_m1_noapoe, ids,
+                                   data = data_clin_long %>% filter(apoe4 == "No"),
+                                   model_name = "cov_m1_apoe4_noncarriers"),
+    m2 = run_lmm(outcome, cov_m2, ids, model_name = "cov_m2"),
+    m3 = run_lmm(outcome, cov_m3, ids, model_name = "cov_m3")
+  )
+  
+  titles <- c(m0 = "crude", m1 = "Model 1",
+              m1_apoe4_carriers = "Model 1, APOE ε4 carriers",
+              m1_apoe4_noncarriers = "Model 1, APOE ε4 non-carriers",
+              m2 = "Model 2", m3 = "Model 3")
+  
+  iwalk(res, \(r, nm) print(save_forest_lmm(r, paste0(test_label, ", ", titles[[nm]]))))
+  
+  invisible(res)
+}
+```
+
+# Data
+
+## Clinical data
+
+Education is collapsed into two levels, race and self-reported kidney disease are made factors (White and No as reference), and `idno` is stored as character for joining.
+
+```{r}
+data_clin <- read_csv(
+  file.path(data_path, "Data_processed", "Meineche_10237_recoded.csv")
+) %>%
+  mutate(
+    grade01 = case_when(
+      grade01 == "High school" | grade01 == "College or above" ~ "Highschool or above",
+      TRUE ~ grade01
+    ),
+    race01    = factor(race01, levels = c("White", "Black", "Other")),
+    kiddis_y5 = factor(kiddis_y5, levels = c(0, 1), labels = c("No", "Yes")),
+    idno      = as.character(idno)
+  )
+```
+
+## Klotho data
+
+Scaled klotho values (sheet `values_scaled`). `idnos_klot` holds everyone with a klotho measurement, the starting population for all analyses.
+
+```{r}
+if (measure_method=='ELISA') {
+  data_klot <- read_xlsx(
+    file.path(data_path, "Data_processed", "elisa_klotho.xlsx"),
+    sheet = "values_scaled"
+  ) %>%
+    rename(
+      klot_value = klot_elisa
+    )
+  
+  idnos_klot <- data_klot %>% pull(idno)
+} 
+
+if (measure_method=='SOMA') {
+  data_klot <- read_xlsx(
+    file.path(data_path, "Data_processed", "soma_y5_klotho.xlsx"),
+    sheet = "values_scaled"
+  ) %>%
+    select(c(idno, KL)) %>%
+    rename(
+      klot_value = KL
+    )
+  
+  idnos_klot <- data_klot %>% pull(idno)
+} 
+
+if (!measure_method %in% c('ELISA', 'SOMA')) {
+  stop(glue("No klotho data defined for measure_method = '{measure_method}'."))
+}
+
+```
+
+# Participants
+
+Each analysis population is stored as a vector of IDs (`idnos_*`).
+
+## Aim 1: Dementia
+
+Participants with klotho, excluding those not in the cognition study (no dementia information) and those with prevalent dementia. For a sensitivity analysis, those with dementia within the first year of follow-up are also excluded.
+
+```{r}
+
+data_aim1 <- data_clin %>% filter(idno %in% idnos_klot)
+n_start   <- nrow(data_aim1)
+lab_start <- glue("Start: N = {n_start}")
+message(lab_start)
+
+data_aim1 <- data_aim1 %>% filter(!is.na(demclass))
+n_cog     <- nrow(data_aim1)
+lab_cog   <- glue("{n_start - n_cog} not in cognition study (no dementia information).")
+message(lab_cog)
+
+data_aim1 <- data_aim1 %>% filter(demclass != "Prevalent")
+n_prev    <- nrow(data_aim1)
+idnos_klot_aim1 <- data_aim1 %>% pull(idno)
+lab_prev  <- glue("{n_cog - n_prev} removed due to prevalent dementia.")
+message(glue("{lab_prev} N = {n_prev}."))
+
+data_aim1_oneyear <- data_aim1 %>% filter(yearsfu > 1)
+idnos_klot_aim1_oneyear <- data_aim1_oneyear %>% pull(idno)
+n_one     <- nrow(data_aim1_oneyear)
+lab_one   <- glue("Sensitivity: {n_prev - n_one} removed due to dementia within the first year.")
+message(glue("{lab_one} N = {n_one}."))
+
+
+# Flowchart built from the same labels and counts
+flow_aim1 <- grViz(glue('
+digraph flow {{
+  graph [rankdir = TB, splines = ortho, nodesep = 0.6]
+  node  [shape = box, fontname = Helvetica, fontsize = 11]
+
+  start [label = "{lab_start}"]
+  cog   [label = "N = {n_cog}"]
+  prev  [label = "N = {n_prev}", style = bold]
+  one   [label = "N = {n_one}"]
+
+  ex1 [label = "{lab_cog}"]
+  ex2 [label = "{lab_prev}"]
+  ex3 [label = "{lab_one}"]
+
+  node [shape = point, width = 0, height = 0]
+  p1; p2; p3
+
+  start -> p1 [arrowhead = none]; p1 -> cog
+  cog   -> p2 [arrowhead = none]; p2 -> prev
+  prev  -> p3 [arrowhead = none]; p3 -> one
+  p1 -> ex1; p2 -> ex2; p3 -> ex3
+
+  {{ rank = same; p1; ex1 }}
+  {{ rank = same; p2; ex2 }}
+  {{ rank = same; p3; ex3 }}
+}}
+'))
+
+flow_aim1
+
+svg <- export_svg(flow_aim1)
+rsvg_png(charToRaw(svg), file.path(dir_desc, "flowchart_aim1.png")) 
+
+rm(list = c("data_aim1", "data_aim1_oneyear", "n_start", "n_cog", "n_prev", "n_one",
+            ls(pattern = "^lab_")))
+
+```
+
+## Aim 2: Cognition
+
+Participants with klotho, excluding those with prevalent dementia (those without dementia information are kept). For each test, participants need a Year 5 score and at least one follow-up score (Years 6–11).
+
+```{r}
+library(dplyr)
+library(glue)
+library(DiagrammeR)
+
+data_aim2 <- data_clin %>% filter(idno %in% idnos_klot)
+n_start   <- nrow(data_aim2)
+lab_start <- glue("Start: N = {n_start}")
+message(lab_start)
+
+fu_3mse <- paste0("score134_y", 6:11)
+fu_dsst <- paste0("digcor_y", 6:11)
+
+aim2_3mse <- data_aim2 %>%
+  filter(!is.na(score134_y5)) %>%
+  filter(if_any(all_of(fu_3mse), ~ !is.na(.x)))
+
+aim2_dsst <- data_aim2 %>%
+  filter(!is.na(digcor_y5)) %>%
+  filter(if_any(all_of(fu_dsst), ~ !is.na(.x)))
+
+idnos_klot_aim2_3mse <- aim2_3mse %>% pull(idno)
+idnos_klot_aim2_dsst <- aim2_dsst %>% pull(idno)
+n_3mse <- nrow(aim2_3mse)
+n_dsst <- nrow(aim2_dsst)
+
+lab_3mse <- glue("3MSE: {n_start - n_3mse} removed (no Y5 score or no follow-up).")
+lab_dsst <- glue("DSST: {n_start - n_dsst} removed (no Y5 score or no follow-up).")
+message(glue("{lab_3mse} N = {n_3mse}"))
+message(glue("{lab_dsst} N = {n_dsst}"))
+
+# Sensitivity
+
+idnos_klot_aim2_3mse_noprevdem <- aim2_3mse %>% 
+  filter(is.na(demclass) | demclass != "Prevalent") %>% 
+  pull(idno)
+n_3mse_sens   <- length(idnos_klot_aim2_3mse_noprevdem)
+lab_3mse_sens <- glue("Sensitivity, 3MSE: {n_3mse - n_3mse_sens} removed due to prevalent dementia.")
+message(glue("{lab_3mse_sens} N = {n_3mse_sens}"))
+
+idnos_klot_aim2_dsst_noprevdem <- aim2_dsst %>% 
+  filter(is.na(demclass) | demclass != "Prevalent") %>% 
+  pull(idno)
+n_dsst_sens   <- length(idnos_klot_aim2_dsst_noprevdem)
+lab_dsst_sens <- glue("Sensitivity, DSST: {n_dsst - n_dsst_sens} removed due to prevalent dementia.")
+message(glue("{lab_dsst_sens} N = {n_dsst_sens}"))
+
+# Flowchart
+
+flow_aim2 <- grViz(glue('
+digraph flow {{
+  graph [rankdir = TB, splines = ortho, nodesep = 0.4, ranksep = 0.35, newrank = true]
+  node  [shape = box, fontname = Helvetica, fontsize = 11]
+
+  start [label = "{lab_start}"]
+  m1    [label = "N = {n_3mse}", style = bold]
+  d1    [label = "N = {n_dsst}", style = bold]
+  m2    [label = "N = {n_3mse_sens}"]
+  d2    [label = "N = {n_dsst_sens}"]
+
+  exm1  [label = "{lab_3mse}"]
+  exd1  [label = "{lab_dsst}"]
+  exm2  [label = "{lab_3mse_sens}"]
+  exd2  [label = "{lab_dsst_sens}"]
+
+  node [shape = point, width = 0, height = 0]
+  pm0; pd0; pm1; pd1; pm2; pd2
+
+  start -> pm0 [arrowhead = none]; start -> pd0 [arrowhead = none]
+  pm0 -> pm1 [arrowhead = none];   pd0 -> pd1 [arrowhead = none]
+  pm1 -> m1;  pd1 -> d1
+  m1 -> pm2 [arrowhead = none]; pm2 -> m2
+  d1 -> pd2 [arrowhead = none]; pd2 -> d2
+
+  # 3MSE exclusions to the left, DSST exclusions to the right
+  exm1 -> pm1 [dir = back]; pd1 -> exd1
+  exm2 -> pm2 [dir = back]; pd2 -> exd2
+
+  {{ rank = same; pm0; pd0; pm0 -> pd0 [style = invis] }}
+  {{ rank = same; exm1; pm1; pd1; exd1; exm1 -> pm1 -> pd1 -> exd1 [style = invis] }}
+  {{ rank = same; exm2; pm2; pd2; exd2; exm2 -> pm2 -> pd2 -> exd2 [style = invis] }}
+  {{ rank = same; m1; d1 }}
+  {{ rank = same; m2; d2 }}
+}}
+'))
+
+flow_aim2
+
+# Save
+svg <- DiagrammeRsvg::export_svg(flow_aim2)
+rsvg_png(charToRaw(svg), file.path(dir_desc, "flowchart_aim2.png")) 
+
+# Clean up
+rm(list = c("data_aim2", "aim2_3mse", "aim2_dsst", "fu_3mse", "fu_dsst", "svg",
+            ls(pattern = "^n_"), ls(pattern = "^lab_")))
+```
+
+## Overlap between analyses
+
+```{r}
+#| fig-width: 6
+#| fig-height: 6
+
+ggVennDiagram(list("Aim 1: Dementia" = idnos_klot_aim1,
+                   "Aim 2: 3MSE"     = idnos_klot_aim2_3mse,
+                   "Aim 2: DSST"     = idnos_klot_aim2_dsst),
+              label_alpha = 0, edge_size = 0.5,
+              set_size = 4.5, set_color = "grey25") +
+  scale_fill_gradient(low = "#F4F6FA", high = "#4C78A8") +
+  scale_x_continuous(expand = expansion(mult = 0.25)) +
+  coord_cartesian(clip = "off") +
+  theme(legend.position = "none")
+```
+
+# Descriptives
+
+## Table 1: Baseline characteristics
+
+Baseline (Year 5) characteristics by analysis population. Participants appear in every column they belong to; "Total" is everyone in at least one analysis.
+
+```{r}
+yn <- function(x) if (is.numeric(x)) factor(x, levels = 0:1, labels = c("No", "Yes")) else x
+
+data_clin_filt <- data_clin %>%
+  filter(idno %in% idnos_klot_aim1 |
+           idno %in% idnos_klot_aim2_3mse |
+           idno %in% idnos_klot_aim2_dsst)
+
+tbl_data <- bind_rows(
+  data_clin_filt %>% filter(idno %in% idnos_klot_aim1)      %>% mutate(sample = "Dementia"),
+  data_clin_filt %>% filter(idno %in% idnos_klot_aim2_3mse) %>% mutate(sample = "3MSE"),
+  data_clin_filt %>% filter(idno %in% idnos_klot_aim2_dsst) %>% mutate(sample = "DSST"),
+  data_clin_filt                                              %>% mutate(sample = "Total")
+) %>%
+  mutate(
+    sample = factor(sample, levels = c("Dementia", "3MSE", "DSST", "Total")),
+    across(c(prevdm_y5, kiddis_y5, htnmed_y5, lipid_y5, estrgn_y5), yn)
+  ) %>%
+  select(
+    sample,
+    age_y5, gend01, race01, grade01,
+    bmi_y5, waist_y5, smoke_y5, kcal_y5,
+    apoe4, egfr_y5,
+    avesys_y5, hyper_y5, htnmed_y5, prevdm_y5, gluadj_y5,
+    ldl_y5, hdl_y5, lipid_y5, crp_y5,
+    kiddis_y5, chdyr5, stkyr5, estrgn_y5
+  )
+
+skewed <- c("kcal_y5", "crp_y5", "gluadj_y5")
+
+table1 <- tbl_data %>%
+  tbl_summary(
+    by = sample,
+    type = list(c(age_y5, avesys_y5) ~ "continuous"),
+    statistic = list(
+      all_continuous()  ~ "{mean} ({sd})",
+      all_of(skewed)    ~ "{median} ({p25}, {p75})",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    value = list(
+      c(htnmed_y5, prevdm_y5, lipid_y5, kiddis_y5, estrgn_y5, apoe4) ~ "Yes",
+      gend01 ~ "Female"
+    ),
+    digits = list(all_continuous() ~ 1, all_categorical() ~ c(0, 1)),
+    label = list(
+      age_y5    ~ "Age, years",
+      gend01    ~ "Female sex",
+      race01    ~ "Race",
+      grade01   ~ "Education",
+      bmi_y5    ~ "BMI, kg/m²",
+      waist_y5  ~ "Waist circumference, cm",
+      smoke_y5  ~ "Smoking status",
+      kcal_y5   ~ "Physical activity, kcal/week",
+      avesys_y5 ~ "Systolic BP, mmHg",
+      hyper_y5  ~ "Hypertension status",
+      htnmed_y5 ~ "Antihypertensive medication",
+      prevdm_y5 ~ "Diabetes",
+      gluadj_y5 ~ "Glucose, mg/dL",
+      ldl_y5    ~ "LDL cholesterol, mg/dL",
+      hdl_y5    ~ "HDL cholesterol, mg/dL",
+      lipid_y5  ~ "Lipid-lowering medication",
+      crp_y5    ~ "CRP, mg/L",
+      egfr_y5   ~ "eGFR, mL/min/1.73 m²",
+      kiddis_y5 ~ "Self-reported kidney disease",
+      chdyr5    ~ "Prevalent CHD",
+      stkyr5    ~ "Prevalent stroke",
+      estrgn_y5 ~ "Estrogen use",
+      apoe4     ~ "APOE ε4 carrier"
+    ),
+    missing = "no"
+  ) %>%
+  modify_header(
+    label ~ "**Characteristic**",
+    all_stat_cols() ~ "**{level}**  \nN = {style_number(n)}"
+  ) %>%
+  modify_spanning_header(all_stat_cols() ~ "**Included in study for outcomes**") %>%
+  modify_caption(paste0("**Table 1.** Baseline (CHS Year 5) characteristics of participants with klotho measured by ", measure_method, ", by analysis sample")) %>%
+  modify_footnote(all_stat_cols() ~
+                    "Mean (SD), median (IQR) or n (%). Participants included in more than one analysis appear in each relevant column. Total = participants in at least one analysis.") %>%
+  bold_labels()
+
+table1
+
+table1 %>% as_gt() %>% gtsave(file.path(dir_desc, "table1_baseline.docx"))
+table1 %>% as_gt() %>% gtsave(file.path(dir_desc, "table1_baseline.png"))
+```
+
+## Table 2: Characteristics by klotho tertile
+
+Characteristics of all participants with klotho by tertile of klotho. Skewed variables (chosen from the histograms) are shown as median (IQR). Categorical variables are tested with χ² tests and continuous variables with the `gtsummary` default (Kruskal–Wallis).
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| results: asis
+
+tbl_vars <- c(
+  "age_y5", "gend01", "race01", "grade01", "smoke_y5",
+  "egfr_y5", "kiddis_y5",
+  "chdyr5", "stkyr5",
+  "apoe4",
+  "score134_y5", "digcor_y5"
+)
+
+tbl <- data_klot %>%
+  left_join(data_clin, by = "idno") %>%
+  mutate(tertile = ntile(klot_value, 3) %>% factor(labels = c("Low", "Mid", "High"))) %>%
+  select(tertile, all_of(tbl_vars))
+
+# Distribution of continuous variables
+tbl %>%
+  select(where(is.numeric)) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "value") %>%
+  ggplot(aes(x = value)) +
+  geom_histogram() +
+  facet_grid(~ Variable, scales = "free") +
+  theme_minimal()
+
+skewed <- c("age_y5", "score134_y5", "digcor_y5")
+
+table2 <- tbl %>%
+  tbl_summary(
+    by = tertile,
+    type = list(c(age_y5, egfr_y5, score134_y5, digcor_y5) ~ "continuous"),
+    statistic = list(
+      all_continuous()  ~ "{mean} ({sd})",
+      all_of(skewed)    ~ "{median} ({p25}, {p75})",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    value = list(
+      c(kiddis_y5, chdyr5, stkyr5, apoe4) ~ "Yes",
+      gend01 ~ "Female"
+    ),
+    digits = list(all_continuous() ~ 1, all_categorical() ~ c(0, 1)),
+    label = list(
+      age_y5      ~ "Age, years",
+      gend01      ~ "Female sex",
+      race01      ~ "Race",
+      grade01     ~ "Education",
+      smoke_y5    ~ "Smoking status",
+      chdyr5      ~ "Prevalent CHD",
+      stkyr5      ~ "Prevalent stroke",
+      apoe4       ~ "APOE ε4 carrier",
+      score134_y5 ~ "3MSE score, Year 5",
+      digcor_y5   ~ "DSST score, Year 5",
+      egfr_y5     ~ "eGFR, mL/min/1.73 m²",
+      kiddis_y5   ~ "Kidney disease (self-reported)"
+    ),
+    missing = "no"
+  ) %>%
+  add_p(test = list(all_categorical() ~ "chisq.test")) %>%
+  modify_header(
+    label ~ "**Characteristic**",
+    all_stat_cols() ~ "**{level}**  \nN = {style_number(n)}"
+  ) %>%
+  modify_spanning_header(all_stat_cols() ~ paste0("**Tertiles of ", measure_method, "-measured Klotho**")) %>%
+  bold_labels() %>%
+  bold_p()
+
+table2 %>% as_gt() %>% gtsave(file.path(dir_desc, "table2_klotho_tertiles.docx"))
+table2 %>% as_gt() %>% gtsave(file.path(dir_desc, "table2_klotho_tertiles.png"))
+
+print(table2)
+
+
+```
+
+Year 5 3MSE and DSST by klotho tertile. The overall Kruskal–Wallis p-value is shown in the panel title, with pairwise Wilcoxon tests above the boxes.
+
+```{r}
+plot_data <- tbl %>%
+  filter(!is.na(tertile)) %>%
+  pivot_longer(c(score134_y5, digcor_y5), names_to = "Test", values_to = "Score") %>%
+  filter(!is.na(Score)) %>%
+  mutate(Test = factor(Test, levels = c("score134_y5", "digcor_y5"), labels = c("3MSE", "DSST")))
+
+facet_labs <- plot_data %>%
+  group_by(Test) %>%
+  summarise(p = kruskal.test(Score ~ tertile)$p.value) %>%
+  mutate(lab = paste0(Test, "\nKruskal–Wallis p ",
+                      if_else(p < 0.001, "< 0.001", paste("=", signif(p, 2)))))
+
+plot_data <- plot_data %>% left_join(facet_labs %>% select(Test, lab), by = "Test")
+
+tertile_cols <- c(Low = "#C6DBEF", Mid = "#6BAED6", High = "#2171B5")
+
+p <- ggplot(plot_data, aes(x = tertile, y = Score, fill = tertile)) +
+  geom_boxplot(width = 0.6, outlier.alpha = 0.3, outlier.size = 0.8) +
+  stat_compare_means(
+    comparisons = list(c("Low", "Mid"), c("Mid", "High"), c("Low", "High")),
+    method = "wilcox.test", label = "p.format", size = 3.2
+  ) +
+  scale_fill_manual(values = tertile_cols) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.12))) +
+  facet_wrap(~ lab, scales = "free_y") +
+  labs(x = paste0("Klotho tertile (", measure_method, ")"), y = "Score, Year 5") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "bold"),
+        panel.grid.major.x = element_blank())
+
+p
+
+ggsave(file.path(dir_desc, "boxplot_cognition_by_klotho_tertile.png"), p, height = 5, width = 7)
+
+rm(plot_data, facet_labs, plot_data, tertile_cols, p)
+```
+
+## Klotho by APOE
+
+### APOE ε4 carrier status
+
+Klotho in APOE ε4 carriers vs non-carriers among participants in the Aim 2 populations, compared with a Welch t-test.
+
+```{r}
+plot_apoe <- data_clin %>%
+  filter(idno %in% idnos_klot_aim2_dsst | idno %in% idnos_klot_aim2_3mse) %>%
+  left_join(data_klot, by = "idno") %>%
+  filter(!is.na(apoe4), !is.na(klot_value)) %>%
+  mutate(apoe4 = factor(apoe4, levels = c("No", "Yes")))
+
+p_apoe <- t.test(klot_value ~ apoe4, data = plot_apoe)$p.value
+plot_apoe <- plot_apoe %>%
+  mutate(lab = paste0(measure_method, " klotho\nT-test p ",
+                      if_else(p_apoe < 0.001, "< 0.001", paste("=", signif(p_apoe, 2)))))
+
+p <- ggplot(plot_apoe, aes(x = apoe4, y = klot_value, fill = apoe4)) +
+  geom_boxplot(width = 0.6, outlier.alpha = 0.3, outlier.size = 0.8) +
+  stat_compare_means(
+    comparisons = list(c("No", "Yes")),
+    method = "t.test", label = "p.format", size = 3.2
+  ) +
+  scale_fill_manual(values = c(No = "#C6DBEF", Yes = "#2171B5")) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.12))) +
+  facet_wrap(~ lab) +
+  labs(x = "APOE ε4 carrier", y = paste0("Klotho (", measure_method, "), Year 5")) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "bold"),
+        panel.grid.major.x = element_blank())
+
+p
+
+ggsave(file.path(dir_desc, "boxplot_klotho_by_apoe4.png"), p, height = 5, width = 4)
+
+
+```
+
+Mean difference with 95% CI, from the t-test and the equivalent linear model.
+
+```{r}
+t.test(klot_value ~ apoe4, data = plot_apoe, conf.int = TRUE)   # Welch t-test, mean difference + 95% CI
+lm(klot_value ~ apoe4, data = plot_apoe) |> tidy(conf.int = TRUE)  # mean difference (SD units)
+```
+
+Crude and adjusted (age, sex, race, eGFR) difference in klotho for carriers vs non-carriers.
+
+```{r}
+fit_crude_b <- lm(klot_value ~ apoe4, data = plot_apoe)
+fit_adj_b   <- lm(klot_value ~ apoe4 + age_y5 + gend01 + race01 + egfr_y5, data = plot_apoe)
+
+model_levels <- c("Crude", "Adjusted (age, sex, race, eGFR)")
+
+ref_rows_b <- tibble(
+  term = "apoe4No", estimate = 0, conf.low = NA_real_, conf.high = NA_real_,
+  model = model_levels
+)
+
+est_b <- bind_rows(
+  tidy(fit_crude_b, conf.int = TRUE) %>% mutate(model = model_levels[1]),
+  tidy(fit_adj_b,   conf.int = TRUE) %>% mutate(model = model_levels[2])
+) %>%
+  filter(term == "apoe4Yes") %>%
+  bind_rows(ref_rows_b) %>%
+  mutate(carrier = factor(sub("apoe4", "", term), levels = c("No", "Yes")),
+         model   = factor(model, levels = model_levels),
+         is_ref  = carrier == "No")
+
+n_lab_b <- plot_apoe %>%
+  count(apoe4) %>%
+  mutate(lab = if_else(apoe4 == "No",
+                       paste0("Non-carrier (ref)\n(n = ", n, ")"),
+                       paste0("ε4 carrier\n(n = ", n, ")")))
+
+p <- ggplot(est_b, aes(x = estimate, y = carrier, colour = model)) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_errorbar(aes(xmin = conf.low, xmax = conf.high), width = 0.2,
+                orientation = "y", position = position_dodge(width = 0.5), na.rm = TRUE) +
+  geom_point(aes(shape = is_ref), size = 2.8, position = position_dodge(width = 0.5)) +
+  scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 15), guide = "none") +
+  scale_colour_manual(values = c("#9ECAE1", "#2171B5"), name = NULL) +
+  scale_y_discrete(labels = setNames(n_lab_b$lab, n_lab_b$apoe4), limits = rev) +
+  labs(x = "Difference in Klotho (SD) vs non-carriers, 95% CI", y = NULL,
+       title = paste0(measure_method, " α-Klotho by APOE ε4 carrier status")) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom", panel.grid.minor = element_blank())
+
+p
+
+ggsave(file.path(dir_desc, "forest_klotho_by_apoe4.png"), p, height = 5, width = 8)
+```
+
+### APOE genotype
+
+Klotho by APOE genotype. Overall Kruskal–Wallis test in the panel title, and pairwise Wilcoxon tests against ε3/ε3 above the boxes.
+
+```{r}
+plot_apoe_geno <- plot_apoe %>%
+  filter(!is.na(apoecvd)) %>%
+  mutate(apoe_genotype = factor(
+    apoecvd,
+    levels = c(22, 23, 33, 24, 34, 44),
+    labels = c("ε2/ε2", "ε2/ε3", "ε3/ε3", "ε2/ε4", "ε3/ε4", "ε4/ε4")
+  ))
+
+p_geno <- kruskal.test(klot_value ~ apoe_genotype, data = plot_apoe_geno)$p.value
+
+plot_apoe_geno <- plot_apoe_geno %>%
+  mutate(lab = paste0(measure_method, " klotho\nKruskal-Wallis p ",
+                      if_else(p_geno < 0.001, "< 0.001", paste("=", signif(p_geno, 2)))))
+
+genotype_cols <- c(
+  "ε2/ε2" = "#DEEBF7",
+  "ε2/ε3" = "#C6DBEF",
+  "ε3/ε3" = "#9ECAE1",
+  "ε2/ε4" = "#6BAED6",
+  "ε3/ε4" = "#2171B5",
+  "ε4/ε4" = "#08306B"
+)
+
+p <- ggplot(plot_apoe_geno, aes(x = apoe_genotype, y = klot_value, fill = apoe_genotype)) +
+  geom_boxplot(width = 0.6, outlier.alpha = 0.3, outlier.size = 0.8) +
+  stat_compare_means(
+    comparisons = list(c("ε3/ε3", "ε2/ε3"),
+                       c("ε3/ε3", "ε3/ε4"),
+                       c("ε3/ε3", "ε4/ε4"),
+                       c("ε3/ε3", "ε2/ε4"),
+                       c("ε3/ε3", "ε2/ε2")),
+    method = "wilcox.test", label = "p.format", size = 3.2
+  ) +
+  scale_fill_manual(values = genotype_cols) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.12))) +
+  facet_wrap(~ lab) +
+  labs(x = "APOE genotype", y = paste0("Klotho (", measure_method, "), Year 5")) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "bold"),
+        panel.grid.major.x = element_blank())
+
+p
+
+ggsave(file.path(dir_desc, "boxplot_klotho_by_apoe_genotype.png"), p, height = 5, width = 10)
+```
+
+Carriers vs non-carriers among participants with known genotype.
+
+```{r}
+wilcox.test(klot_value ~ apoe4, data = plot_apoe_geno, conf.int = TRUE)   # Hodges–Lehmann shift + 95% CI
+lm(klot_value ~ apoe4, data = plot_apoe_geno) |> tidy(conf.int = TRUE)    # mean difference (SD units)
+```
+
+## Klotho in prevalent dementia
+
+Among participants in the cognition study, klotho in those with prevalent dementia at baseline vs everyone else, compared with a t-test.
+
+```{r}
+demclass_df <- data_clin %>%
+  filter(!is.na(demclass)) %>%
+  left_join(data_klot, by = "idno") %>%
+  mutate(demclass_prevalent = if_else(demclass == "Prevalent", "Prevalent", "Non-prevalent"))
+
+demclass_df %>%
+  select(demclass_prevalent, klot_value) %>%
+  tbl_summary(
+    by = demclass_prevalent,
+    type = klot_value ~ "continuous2",
+    statistic = klot_value ~ c("{mean} ({sd})",
+                               "{median} ({p25}, {p75})",
+                               "{min}, {max}"),
+    missing = "ifany"
+  ) %>%
+  add_p(test = klot_value ~ "t.test")
+
+ggplot(demclass_df, aes(x = demclass_prevalent, y = klot_value, fill = demclass_prevalent)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.5) +   # outliers are shown by the points
+  geom_jitter(width = 0.15, alpha = 0.5) +
+  stat_compare_means(
+    comparisons = list(c("Non-prevalent", "Prevalent")),
+    method = "t.test", label = "p.format", size = 3.2
+  ) +
+  labs(x = NULL, y = paste0("Klotho (", measure_method, "), Year 5")) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+# Aim 1: Klotho and incident dementia
+
+## Analysis data
+
+Klotho, covariates and follow-up for the Aim 1 population, with two outcomes: incident dementia, and incident dementia or MCI. Klotho tertiles are added for the survival curves.
+
+```{r}
+data_combined_aim1 <- full_join(data_klot, data_clin, by = "idno") %>%
+  select(idno, klot_value, all_of(cov_m3), demclass, demtype, yearsfu) %>%
+  filter(idno %in% idnos_klot_aim1) %>%
+  mutate(
+    tertile          = ntile(klot_value, 3),
+    dem_incident     = case_when(demclass == "Incident" ~ TRUE, TRUE ~ FALSE),
+    dem_incident_MCI = case_when(demclass %in% c("MCI", "Incident") ~ TRUE, TRUE ~ FALSE)
+  )
+```
+
+## Survival curves
+
+Unadjusted curves by klotho tertile with risk tables and log-rank p-values.
+
+| `type`       | Transformation   |
+|:-------------|:-----------------|
+| `"survival"` | $x$              |
+| `"risk"`     | $1 - x$          |
+| `"cumhaz"`   | $-\log(x)$       |
+| `"cloglog"`  | $\log(-\log(x))$ |
+
+| Estimator | What it estimates | In R |
+|:-----------------------|:-----------------------|:-----------------------|
+| **Kaplan–Meier** | Survival $S(t)$, or $1 - S(t)$ for event risk | `survfit(..., stype = 1, ctype = 1)` |
+| **Nelson–Aalen** | Cumulative hazard $H(t)$ | `survfit(..., stype = 2, ctype = 1)` gives survival as $\exp(-H)$ |
+| **Aalen–Johansen** | Cumulative incidence with competing risks | `survfit()` with a multi-state formulation |
+
+Dementia-free survival:
+
+```{r}
+survfit2(Surv(yearsfu, dem_incident) ~ tertile, data = data_combined_aim1) %>%
+  ggsurvfit() +
+  add_confidence_interval() +
+  add_risktable() +
+  add_pvalue(location = "annotation") +     # log-rank p
+  scale_color_manual(values = c("#C6DBEF", "#6BAED6", "#2171B5")) +
+  scale_fill_manual(values  = c("#C6DBEF", "#6BAED6", "#2171B5"))
+```
+
+Cumulative incidence of dementia or MCI:
+
+```{r}
+survfit2(Surv(yearsfu, dem_incident_MCI) ~ tertile, data = data_combined_aim1) %>%
+  ggsurvfit(type = "risk") +
+  add_confidence_interval() +
+  add_risktable() +
+  add_pvalue(location = "annotation") +     # log-rank p
+  scale_color_manual(values = c("#C6DBEF", "#6BAED6", "#2171B5")) +
+  scale_fill_manual(values  = c("#C6DBEF", "#6BAED6", "#2171B5")) +
+  labs(x = "Years since Year 5", y = "Cumulative incidence of dementia")
+```
+
+## Cox models
+
+Outcome: incident dementia. Results are saved to `02_cox_dementia/dem_incident/<model>/`.
+
+### Model 0 (crude)
+
+```{r}
+res_m0 <- run_cox("dem_incident", cov_m0)
+```
+
+### Model 1
+
+```{r}
+res_m1 <- run_cox("dem_incident", cov_m1)
+save_forest_cox(res_m1)
+```
+
+### Model 1, stratified by APOE ε4
+
+```{r}
+res_m1_apoe4 <- run_cox("dem_incident", setdiff(cov_m1, "apoe4"),
+                        data = data_combined_aim1 %>% filter(apoe4 == "Yes"),
+                        model_name = "cov_m1_apoe4_carriers")
+res_m1_nonapoe4 <- run_cox("dem_incident", setdiff(cov_m1, "apoe4"),
+                           data = data_combined_aim1 %>% filter(apoe4 == "No"),
+                           model_name = "cov_m1_apoe4_noncarriers")
+
+p_yes <- res_m1_apoe4$results    %>% format_forest() %>% plot_forest_hr()
+p_no  <- res_m1_nonapoe4$results %>% format_forest() %>% plot_forest_hr()
+
+p <- (p_yes + ggtitle("APOE ε4 positive")) + (p_no + ggtitle("APOE ε4 negative"))
+p
+
+ggsave(file.path(dir_cox, "dem_incident", "forest_cov_m1_by_apoe4.png"),
+       p, height = 5, width = 15, bg = "white")
+```
+
+### Model 1, stratified by sex
+
+Participants of "Other" race are excluded.
+
+```{r}
+res_m1_fem <- run_cox("dem_incident", setdiff(cov_m1, "gend01"),
+                      data = data_combined_aim1 %>% filter(gend01 == "Female" & race01 != "Other"),
+                      model_name = "cov_m1_women")
+res_m1_mal <- run_cox("dem_incident", setdiff(cov_m1, "gend01"),
+                      data = data_combined_aim1 %>% filter(gend01 == "Male" & race01 != "Other"),
+                      model_name = "cov_m1_men")
+
+p_fem <- res_m1_fem$results %>% format_forest(drop_terms = "race01Other") %>% plot_forest_hr()
+p_mal <- res_m1_mal$results %>% format_forest(drop_terms = "race01Other") %>% plot_forest_hr()
+
+p <- (p_fem + ggtitle("Female")) + (p_mal + ggtitle("Male"))
+p
+
+ggsave(file.path(dir_cox, "dem_incident", "forest_cov_m1_by_sex.png"),
+       p, height = 5, width = 15, bg = "white")
+```
+
+### Model 2
+
+```{r}
+# res_m2 <- run_cox("dem_incident", cov_m2)
+# save_forest_cox(res_m2, height = 5)
+```
+
+### Model 3 (sensitivity)
+
+```{r}
+# res_m3 <- run_cox("dem_incident", cov_m3)
+# save_forest_cox(res_m3, height = 7)
+```
+
+# Aim 2: Klotho and cognitive trajectories
+
+## Analysis data
+
+Long format with one row per participant and study year, with 3MSE (`score134`) and DSST (`digcor`) scores and klotho.
+
+```{r}
+data_clin_long <- data_clin %>%
+  left_join(data_klot, by = "idno") %>%
+  pivot_longer(
+    cols            = matches("^(score134|digcor)_y\\d+$"),
+    names_to        = c(".value", "year"),
+    names_pattern   = "(score134|digcor)_y(\\d+)",
+    names_transform = list(year = as.integer)
+  )
+```
+
+Models included in the combined forest plots (Model 3 is left out).
+
+```{r}
+rows_lmm <- tribble(
+  ~model,                 ~label,         ~group,
+  "m0",                   "Crude",        "Overall",
+  "m1",                   "Model 1",      "Overall",
+  "m2",                   "Model 2",      "Overall",
+  # "m3",                 "Model 3",      "Overall",
+  "m1_apoe4_carriers",    "ε4 carriers",  "Stratified by APOE ε4 (Model 1)",
+  "m1_apoe4_noncarriers", "Non-carriers", "Stratified by APOE ε4 (Model 1)"
+)
+```
+
+## 3MSE
+
+```{r}
+res_3mse <- run_lmm_models("score134", idnos_klot_aim2_3mse, test_label = "3MSE")
+```
+
+```{r}
+res_3mse$m3$results
+```
+
+Klotho estimates across models: difference in yearly change (klotho × time) and difference at Year 5.
+
+```{r}
+p_slope <- plot_forest_lmm(res_3mse[rows_lmm$model], rows_lmm, term = "klot_value:time",
+                           xlab = "Difference in yearly 3MSE change per SD Klotho (points)")
+p_level <- plot_forest_lmm(res_3mse[rows_lmm$model], rows_lmm, term = "klot_value",
+                           xlab = "Difference in 3MSE at year 5 per SD Klotho (points)")
+p_slope
+p_level
+
+ggsave(file.path(dir_lmm, "forest_3mse_slope.png"),
+       p_slope, width = 10, height = 3.8, dpi = 300, bg = "white")
+```
+
+## DSST
+
+```{r}
+res_dsst <- run_lmm_models("digcor", idnos_klot_aim2_dsst, test_label = "DSST")
+```
+
+```{r}
+p_slope <- plot_forest_lmm(res_dsst[rows_lmm$model], rows_lmm, term = "klot_value:time",
+                           xlab = "Difference in yearly DSST change per SD Klotho (points)")
+p_level <- plot_forest_lmm(res_dsst[rows_lmm$model], rows_lmm, term = "klot_value",
+                           xlab = "Difference in DSST at year 5 per SD Klotho (points)")
+p_slope
+p_level
+
+ggsave(file.path(dir_lmm, "forest_dsst_slope.png"),
+       p_slope, width = 10, height = 3.8, dpi = 300, bg = "white")
+```
+
+# Aim 3: Genetics
+
+## Data
+
+Genotypes for selected *KL* SNPs (number of effect alleles: 0, 1 or 2).
+
+```{r}
+data_genetics <- read_csv(
+  file.path(data_path, "Meineche_10237", "Klotho SNPs", "CHSCC_TOPMedWGS_July2026_snps.csv")
+) %>%
+  mutate(idno = as.character(idno))
+```
+
+rs9527025 and rs9536314 are in near-perfect linkage disequilibrium, as expected since they are inherited together as the KL-VS haplotype:
+
+```{r}
+cor(data_genetics$rs9527025_G, data_genetics$rs9536314_T)
+```
+
+SNP annotation (gene names) from g:Profiler g:SNPense.
+
+```{r}
+data_snp_info <- read.csv(
+  file.path(data_path, "Meineche_10237", "Klotho SNPs", "gProfiler_gSNPense_2026-10-05_12-14-26.csv"),
+  skip = 1
+) %>%
+  rename(SNP = id)
+```
+
+## Klotho levels by SNP
+
+### Boxplots
+
+Klotho by number of effect alleles for each SNP, with pairwise t-tests.
+
+```{r}
+data_genetics_klot <- left_join(data_genetics, data_klot, by = "idno") %>%
+  filter(!is.na(klot_value)) %>%
+  pivot_longer(cols = -c(idno, klot_value), names_to = "SNP", values_to = "Mutations") %>%
+  mutate(Mutations = factor(Mutations))
+
+p <- data_genetics_klot %>%
+  ggplot(aes(x = Mutations, y = klot_value)) +
+  geom_boxplot(aes(fill = Mutations)) +
+  facet_wrap(~ SNP, ncol = 4) +
+  stat_compare_means(
+    comparisons = list(c("0", "1"), c("1", "2"), c("0", "2")),
+    method = "t.test", label = "p.format", size = 3.2
+  ) +
+  labs(y = paste0("Klotho SD (", measure_method, ")")) +
+  theme_minimal()
+
+p
+
+ggsave(file.path(dir_gen, "boxplot_klotho_by_snp.png"), p, height = 8, width = 12)
+```
+
+### Linear models
+
+For each SNP, `klot_value ~ genotype` with 0 copies as reference. The per-genotype p-value compares 1 or 2 copies with 0 copies; the overall F-test (panel title) tests any difference between genotypes.
+
+```{r}
+geno_cols <- c("0" = "#9ECAE1", "1" = "#2171B5", "2" = "#08306B")
+
+data_genetics_klot <- data_genetics %>% 
+  pivot_longer(cols = -c(idno), names_to = 'SNP', values_to = 'Mutations') %>%
+  left_join(data_klot, by = 'idno')
+
+# One model per SNP
+model_df <- data_genetics_klot %>%
+  mutate(Mutations = factor(Mutations, levels = c(0, 1, 2))) %>%
+  nest(.by = SNP) %>%
+  mutate(
+    fit       = map(data, \(d) lm(klot_value ~ Mutations, data = d)),
+    coef      = map(fit,  \(f) tidy(f, conf.int = TRUE)),
+    overall_p = map_dbl(fit, \(f) glance(f)$p.value)
+  )
+
+# n per SNP and genotype
+n_tab <- data_genetics_klot %>%
+  filter(!is.na(klot_value), !is.na(Mutations)) %>%
+  count(SNP, Level = as.character(Mutations), name = "n")
+
+# Results table
+results_snp <- model_df %>%
+  select(SNP, overall_p, coef) %>%
+  unnest(coef) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(Level = sub("Mutations", "", term)) %>%
+  bind_rows(model_df %>% transmute(SNP, overall_p, Level = "0", estimate = 0)) %>%
+  left_join(n_tab, by = c("SNP", "Level")) %>%
+  mutate(
+    Level  = factor(Level, levels = c(0, 1, 2)),
+    is_ref = Level == "0",
+    lab    = if_else(
+      is_ref,
+      paste0("Reference   n = ", n),
+      sprintf("%.2f (%.2f to %.2f)   p %s   n = %d",
+              estimate, conf.low, conf.high, fmt_p(p.value), n)
+    )
+  ) %>%
+  rename(SNP_allele = SNP) %>%
+  separate(SNP_allele, sep = "_", into = c("SNP", "allele"), remove = FALSE) %>%
+  left_join(data_snp_info, by = "SNP") %>%
+  mutate(facet_lab = paste0(SNP_allele, " (", gene_names, ")",
+                            "\nOverall F-test p ", fmt_p(overall_p))) %>%
+  arrange(SNP, Level)
+
+# Forest plot
+x_text <- max(results_snp$conf.high, na.rm = TRUE) * 1.1   # where the text column starts
+
+p <- ggplot(results_snp, aes(x = estimate, y = Level, colour = Level)) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_errorbar(aes(xmin = conf.low, xmax = conf.high), width = 0.2,
+                orientation = "y", linewidth = 0.8, na.rm = TRUE) +
+  geom_point(aes(shape = is_ref), size = 3) +
+  geom_text(aes(x = x_text, label = lab), hjust = 0, size = 3.2, colour = "grey20") +
+  scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 15), guide = "none") +
+  scale_colour_manual(values = geno_cols, guide = "none") +
+  scale_x_continuous(expand = expansion(mult = c(0.05, 1.2))) +   # room for the text
+  facet_wrap(~ facet_lab, ncol = 2) +
+  labs(x = "Difference in Klotho (SD) vs 0 copies, 95% CI",
+       y = "Copies",
+       title = paste0(measure_method, " α-Klotho by genotype")) +
+  theme_minimal(base_size = 13) +
+  theme(panel.grid.major.y = element_blank())
+
+p
+
+ggsave(file.path(dir_gen, "forest_klotho_by_snp.png"), p,
+       height = 2 + 1.6 * ceiling(n_distinct(results_snp$SNP) / 2), width = 14, bg = "white")
+```
+
+SNPs included:
+
+```{r}
+cat(unique(results_snp$SNP), sep = "\n")
+```
+
+## KL-VS
+
+Two *KL* variants, rs9536314 (p.F352V) and rs9527025 (p.C370S), are in strong linkage disequilibrium and segregate together as a functional haplotype, KL-VS. Carrying one copy, but not two, of the KL-VS haplotype (KL-VS heterozygosity, KL-VS^het^) has been linked to higher circulating klotho ([Driscoll et al., PLoS One 2022](https://doi.org/10.1371/journal.pone.0267298)).
+
+Because the two variants are in near-perfect LD, KL-VS status is defined from rs9527025 alone: heterozygous (1 copy) = `Het+`, otherwise (0 or 2 copies) = `Het-`.
+
+```{r}
+data_klvs <- data_genetics %>%
+  mutate(KL_VS = factor(case_when(rs9527025_G == 1 ~ "Het+", TRUE ~ "Het-"))) %>%
+  left_join(data_klot, by = "idno") %>%
+  left_join(data_clin,  by = "idno")
+
+table(data_klvs$KL_VS, useNA = "ifany")
+```
+
+### Klotho levels
+
+```{r}
+p <- data_klvs %>%
+  filter(!is.na(klot_value), !is.na(KL_VS)) %>%
+  ggplot(aes(x = KL_VS, y = klot_value, fill = KL_VS)) +
+  geom_boxplot(width = 0.6, outlier.alpha = 0.3, outlier.size = 0.8) +
+  stat_compare_means(
+    comparisons = list(c("Het-", "Het+")),
+    method = "t.test", label = "p.format", size = 3.2
+  ) +
+  scale_fill_manual(values = c("Het-" = "#C6DBEF", "Het+" = "#2171B5")) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.12))) +   # room for the p-value
+  labs(x = NULL, y = paste0("Klotho SD (", measure_method, ")")) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none",
+        panel.grid.major.x = element_blank())
+
+p
+
+ggsave(file.path(dir_klvs, "boxplot_klotho_by_klvs.png"), p, height = 8, width = 14, bg = "white")
+```
+
+Difference in klotho for KL-VS Het+ vs Het-, crude and across covariate sets.
+
+```{r}
+cov_m05 = c('age_y5', 'gend01')
+
+model_sets <- list(
+  "Crude"     = character(0),
+  "Model 0.5" = cov_m05,
+  "Model 1"   = cov_m1,
+  "Model 2"   = cov_m2,
+  "Model 3"   = cov_m3
+)
+
+model_cols <- c("#C6DBEF", "#9ECAE1", "#6BAED6", "#2171B5", "#08306B")
+
+fits_klvs <- map(model_sets, \(cv)
+  lm(reformulate(c("KL_VS", cv), response = "klot_value"), data = data_klvs)
+)
+
+est_klvs <- imap_dfr(fits_klvs, \(f, nm) {
+  mf <- model.frame(f)                       # the rows actually used in the model
+  tidy(f, conf.int = TRUE) %>%
+    filter(str_starts(term, "KL_VS")) %>%
+    mutate(model     = nm,
+           n         = nrow(mf),
+           n_carrier = sum(mf$KL_VS == "Het+"))
+}) %>%
+  mutate(
+    model = factor(model, levels = names(model_sets)),
+    lab   = sprintf("%.2f (%.2f to %.2f)   p %s   n = %d (%d Het+)",
+                    estimate, conf.low, conf.high, fmt_p(p.value), n, n_carrier)
+  )
+
+est_klvs
+
+write_xlsx(est_klvs, file.path(dir_klvs, "lm_klotho_by_klvs.xlsx"))
+
+# Covariates in each model
+adj_text <- imap_chr(model_sets, \(cv, nm)
+  paste0(nm, ": ", if (length(cv) == 0) "unadjusted" else paste(nice_cov(cv), collapse = ", "))
+)
+cat(adj_text, sep = "\n")
+writeLines(adj_text, file.path(dir_klvs, "lm_klotho_by_klvs_adjustment.txt"))
+
+# Forest plot
+x_text <- max(est_klvs$conf.high) + 0.1 * diff(range(c(est_klvs$conf.low, est_klvs$conf.high)))
+
+p <- ggplot(est_klvs, aes(x = estimate, y = model, colour = model)) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_errorbar(aes(xmin = conf.low, xmax = conf.high), width = 0.2,
+                orientation = "y", linewidth = 0.8) +
+  geom_point(size = 3) +
+  geom_text(aes(x = x_text, label = lab), hjust = 0, size = 3.2, colour = "grey20") +
+  scale_colour_manual(values = model_cols, guide = "none") +
+  scale_y_discrete(limits = rev) +
+  scale_x_continuous(expand = expansion(mult = c(0.05, 1.3))) +   # room for the text
+  labs(x = "Difference in Klotho (SD), KL-VS Het+ vs Het-, 95% CI", y = NULL,
+       title = paste0(measure_method, " α-Klotho by KL-VS carrier status")) +
+  theme_minimal(base_size = 13) +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.y = element_blank())
+
+p
+
+ggsave(file.path(dir_klvs, "forest_lm_klotho_by_klvs.png"), p, height = 4, width = 11, bg = "white")
+```
+
+### KL-VS and incident dementia
+
+Cox models of incident dementia (and dementia or MCI) on KL-VS status, excluding participants of "Other" race. Results are saved to `04_genetics/klvs/cox/<outcome>/<model>/`.
+
+```{r}
+dir_klvs_cox <- file.path(dir_klvs, "cox")
+
+data_klvs_cox <- data_klvs %>%
+  mutate(
+    dem_incident     = case_when(demclass == "Incident" ~ TRUE, TRUE ~ FALSE),
+    dem_incident_MCI = case_when(demclass %in% c("MCI", "Incident") ~ TRUE, TRUE ~ FALSE)
+  ) %>%
+  filter(race01 != "Other")
+```
+
+#### Incident dementia
+
+```{r}
+res_klvs_dem <- map(c("cov_m05", "cov_m1", "cov_m2"), \(adj) {
+  res <- run_cox("dem_incident", get(adj),
+                 data = data_klvs_cox, variable_of_interest = "KL_VS",
+                 model_name = adj, out_dir = dir_klvs_cox)
+  print(save_forest_cox(res, drop_terms = "race01Other"))
+  res
+}) %>%
+  set_names(c("cov_m05", "cov_m1", "cov_m2"))
+```
+
+#### Incident dementia or MCI
+
+```{r}
+
+res_klvs_dem <- map(c("cov_m05", "cov_m1", "cov_m2"), \(adj) {
+  res <- run_cox("dem_incident_MCI", get(adj),
+                 data = data_klvs_cox, variable_of_interest = "KL_VS",
+                 model_name = glue('{adj}_MCI'), out_dir = dir_klvs_cox)
+  print(save_forest_cox(res, drop_terms = "race01Other"))
+  res
+}) %>%
+  set_names(c("cov_m05", "cov_m1", "cov_m2"))
+
+
+```

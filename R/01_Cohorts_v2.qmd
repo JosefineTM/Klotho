@@ -1,0 +1,969 @@
+---
+title: "Cohorts"
+format:
+  html:
+    toc: true
+    toc_depth: 3
+    html-math-method: katex
+    grid:
+      body-width: 1200px
+---
+
+This Documents takes a look at who are in the cohorts.
+
+- Aim 1 needs people in the cognition substudy who were free of dementia at year 5
+
+- Aim 2 needs people with repeated 3MSE/DSST scoress
+
+- Make a flowchart with the N at each step, for Soma, Olink and Elisa separately.
+
+# Setup
+
+```{r}
+#| message: false
+
+rm(list = ls())
+
+library(tidyverse)
+library(haven)
+library(gt)
+library(gtsummary)
+library(glue)
+library(writexl)
+library(readxl)
+library(ggVennDiagram)
+library(glue)
+library(ggpubr)
+
+
+
+# Import data
+source('paths.R')
+```
+
+## Clinical data
+
+```{r}
+data_clin <- read_csv(
+  file.path(
+    data_path, 'Data_processed', 'Meineche_10237_recoded.csv')
+  )
+```
+
+## Protein data
+
+```{r}
+data_soma <- read_xlsx(
+  file.path(
+    data_path, 'Data_processed', 'soma_y5_klotho.xlsx'
+  ), 
+  sheet = 'values_scaled'
+)
+
+idnos_soma <- data_soma %>% pull(idno)
+
+data_olink <- read_xlsx(
+  file.path(
+    data_path, 'Data_processed', 'olink_y5_klotho.xlsx'
+  ), 
+  sheet = 'values_scaled'
+)
+
+idnos_olink <- data_olink %>% pull(idno)
+
+data_elisa <- read_xlsx(
+  file.path(
+    data_path, 'Data_processed', 'elisa_klotho.xlsx'
+  ), 
+  sheet = 'values_scaled'
+)
+
+idnos_elisa <- data_elisa %>% pull(idno)
+
+
+# rm(data_soma, data_olink)
+```
+
+# Participants
+
+## Venn
+
+```{r}
+#| fig-width: 6
+#| fig-height: 6
+
+
+ggVennDiagram(list(Olink = idnos_olink, SomaScan = idnos_soma, Elisa =idnos_elisa),
+              label_alpha = 0, edge_size = 0.5,
+              set_size = 4.5, set_color = "grey25") +
+  scale_fill_gradient(low = "#F4F6FA", high = "#4C78A8") +
+  scale_x_continuous(expand = expansion(mult = 0.25)) +
+  coord_cartesian(clip = "off") +
+  theme(legend.position = "none")
+```
+
+## Soma
+
+```{r}
+
+data_soma_clin <- data_clin %>%
+  filter(idno %in% idnos_soma)
+
+n_start <- nrow(data_soma_clin)
+
+message(glue('Start: N={n_start}'))
+
+message('AIM 1:')
+
+data_soma_clin <- data_soma_clin %>%
+  filter(!is.na(demclass))
+
+n_not_cog <- nrow(data_soma_clin)
+
+message(glue('{n_start-n_not_cog} not in cognition study (no dementia information).'))
+
+data_soma_clin <- data_soma_clin %>%
+  filter(demclass != 'Prevalent')
+
+n_prev <- nrow(data_soma_clin)
+
+message(glue('{n_not_cog-n_prev} removed due to prevalent dementia. N={n_prev}.'))
+
+data_soma_clin <- data_soma_clin %>%
+  filter(yearsfu > 1)
+
+n_one_year <- nrow(data_soma_clin)
+
+message(glue('{n_prev-n_one_year} removed due dementia within first year. N={n_one_year}.'))
+
+idnos_soma_aim1 <- data_soma_clin %>% pull(idno)
+
+
+# ------------------------------------------------------------------------------------------
+
+message('\nAIM 2:')
+
+data_soma_clin_aim2 <- data_soma_clin
+
+fu_3mse <- paste0('score134_y', 6:11)
+fu_dsst <- paste0('digcor_y', 6:11)
+
+aim2_3mse <- data_soma_clin_aim2 %>%
+  filter(!is.na(score134_y5)) %>%
+  filter(if_any(all_of(fu_3mse), ~ !is.na(.x)))
+
+aim2_dsst <- data_soma_clin_aim2 %>%
+  filter(!is.na(digcor_y5)) %>%
+  filter(if_any(all_of(fu_dsst), ~ !is.na(.x)))
+
+idnos_soma_aim2_3mse <- aim2_3mse %>% pull(idno)
+idnos_soma_aim2_dsst <- aim2_dsst %>% pull(idno)
+
+message(glue('3MSE: {n_one_year - nrow(aim2_3mse)} removed (no Y5 score or no follow-up). N={nrow(aim2_3mse)}'))
+message(glue('DSST: {n_one_year - nrow(aim2_dsst)} removed (no Y5 score or no follow-up). N={nrow(aim2_dsst)}'))
+
+data_soma_clin_aim2 <- data_soma_clin_aim2 %>%
+  filter(!is.na(score134_y5)) %>%
+  filter(if_any(all_of(fu_3mse), ~ !is.na(.x)))%>%
+  filter(!is.na(digcor_y5)) %>%
+  filter(if_any(all_of(fu_dsst), ~ !is.na(.x)))
+
+```
+
+## Olink
+
+```{r}
+data_olink_clin <- data_clin %>%
+  filter(idno %in% idnos_olink)
+
+n_start <- nrow(data_olink_clin)
+
+message(glue('Start: N={n_start}'))
+
+message('AIM 1:')
+
+data_olink_clin <- data_olink_clin %>%
+  filter(!is.na(demclass))
+
+n_not_cog <- nrow(data_olink_clin)
+
+message(glue('{n_start-n_not_cog} not in cognition study (no dementia information).'))
+
+
+data_olink_clin <- data_olink_clin %>%
+  filter(demclass != 'Prevalent')
+
+n_prev <- nrow(data_olink_clin)
+
+message(glue('{n_not_cog-n_prev} removed due to prevalent dementia. N={n_prev}.'))
+
+data_olink_clin <- data_olink_clin %>%
+  filter(yearsfu > 1)
+
+n_one_year <- nrow(data_olink_clin)
+
+message(glue('{n_prev-n_one_year} removed due dementia within first year. N={n_one_year}.'))
+
+idnos_olink_aim1 <- data_olink_clin %>% pull(idno)
+  
+  
+# -----------------------------------------------------------------------------------
+
+
+message('\nAIM 2:')
+
+data_olink_clin_aim2 <- data_olink_clin
+
+fu_3mse <- paste0('score134_y', 6:11)
+fu_dsst <- paste0('digcor_y', 6:11)
+
+aim2_3mse <- data_olink_clin_aim2 %>%
+  filter(!is.na(score134_y5)) %>%
+  filter(if_any(all_of(fu_3mse), ~ !is.na(.x)))
+
+aim2_dsst <- data_olink_clin_aim2 %>%
+  filter(!is.na(digcor_y5)) %>%
+  filter(if_any(all_of(fu_dsst), ~ !is.na(.x)))
+
+idnos_olink_aim2_3mse <- aim2_3mse %>% pull(idno)
+idnos_olink_aim2_dsst <- aim2_dsst %>% pull(idno)
+
+
+message(glue('3MSE: {n_one_year - nrow(aim2_3mse)} removed (no Y5 score or no follow-up). N={nrow(aim2_3mse)}'))
+message(glue('DSST: {n_one_year - nrow(aim2_dsst)} removed (no Y5 score or no follow-up). N={nrow(aim2_dsst)}'))
+
+data_olink_clin_aim2 <- data_olink_clin_aim2 %>%
+  filter(!is.na(score134_y5)) %>%
+  filter(if_any(all_of(fu_3mse), ~ !is.na(.x)))%>%
+  filter(!is.na(digcor_y5)) %>%
+  filter(if_any(all_of(fu_dsst), ~ !is.na(.x)))
+```
+
+## Elisa
+
+```{r}
+data_elisa_clin <- data_clin %>%
+  filter(idno %in% idnos_elisa)
+
+n_start <- nrow(data_elisa_clin)
+
+message(glue('Start: N={n_start}'))
+
+message('AIM 1:')
+
+data_elisa_clin <- data_elisa_clin %>%
+  filter(!is.na(demclass))
+
+n_not_cog <- nrow(data_elisa_clin)
+
+message(glue('{n_start-n_not_cog} not in cognition study (no dementia information).'))
+
+
+data_elisa_clin <- data_elisa_clin %>%
+  filter(demclass != 'Prevalent')
+
+n_prev <- nrow(data_elisa_clin)
+
+message(glue('{n_not_cog-n_prev} removed due to prevalent dementia. N={n_prev}.'))
+
+data_elisa_clin <- data_elisa_clin %>%
+  filter(yearsfu > 1)
+
+n_one_year <- nrow(data_elisa_clin)
+
+message(glue('{n_prev-n_one_year} removed due dementia within first year. N={n_one_year}.'))
+
+idnos_elisa_aim1 <- data_elisa_clin %>% pull(idno)
+  
+  
+# -----------------------------------------------------------------------------------
+
+
+message('\nAIM 2:')
+
+data_elisa_clin_aim2 <- data_elisa_clin
+
+fu_3mse <- paste0('score134_y', 6:11)
+fu_dsst <- paste0('digcor_y', 6:11)
+
+aim2_3mse <- data_elisa_clin_aim2 %>%
+  filter(!is.na(score134_y5)) %>%
+  filter(if_any(all_of(fu_3mse), ~ !is.na(.x)))
+
+aim2_dsst <- data_elisa_clin_aim2 %>%
+  filter(!is.na(digcor_y5)) %>%
+  filter(if_any(all_of(fu_dsst), ~ !is.na(.x)))
+
+idnos_elisa_aim2_3mse <- aim2_3mse %>% pull(idno)
+idnos_elisa_aim2_dsst <- aim2_dsst %>% pull(idno)
+
+
+message(glue('3MSE: {n_one_year - nrow(aim2_3mse)} removed (no Y5 score or no follow-up). N={nrow(aim2_3mse)}'))
+message(glue('DSST: {n_one_year - nrow(aim2_dsst)} removed (no Y5 score or no follow-up). N={nrow(aim2_dsst)}'))
+
+data_elisa_clin_aim2 <- data_elisa_clin_aim2 %>%
+  filter(!is.na(score134_y5)) %>%
+  filter(if_any(all_of(fu_3mse), ~ !is.na(.x)))%>%
+  filter(!is.na(digcor_y5)) %>%
+  filter(if_any(all_of(fu_dsst), ~ !is.na(.x)))
+```
+
+```{r}
+nrow(data_olink_clin)
+length(idnos_olink_aim1)
+nrow(data_elisa_clin)
+length(idnos_elisa_aim1)
+```
+
+```{mermaid}
+flowchart TD
+    subgraph SOMA["<b>SomaScan</b>"]
+        direction TB
+        S0["CHS Year 5 participants<br/>with SomaScan<br/><b>N = 3,171</b>"]
+        SX1["<b>Excluded, n = 875</b><br/>Not in Cognition Study: 789<br/>Prevalent dementia: 86"]
+        S1["Dementia-free at baseline<br/><b>N = 2,296</b>"]
+        SX2["<b>Excluded, n = 30</b><br/>Dementia onset &lt; 1 year"]
+        S2["<b>Aim 1: Incident dementia</b><br/>N = 2,266"]
+        SX3["<b>Excluded</b><br/>No Y5 score or follow-up<br/>3MSE: 35 · DSST: 74"]
+        S3["<b>Aim 2: 3MSE</b><br/>N = 2,231"]
+        S4["<b>Aim 2: DSST</b><br/>N = 2,192"]
+
+        S0 --> S1
+        S0 -.- SX1
+        S1 --> S2
+        S1 -.- SX2
+        S2 --> S3
+        S2 --> S4
+        S2 -.- SX3
+    end
+    
+    subgraph OLINK["<b>Olink</b>"]
+        direction TB
+        O0["CHS Year 5 participants<br/>with Olink<br/><b>N = 4,037</b>"]
+        OX1["<b>Excluded, n = 1,251</b><br/>Not in Cognition Study: 1,088<br/>Prevalent dementia: 163"]
+        O1["Dementia-free at baseline<br/><b>N = 2,786</b>"]
+        OX2["<b>Excluded, n = 60</b><br/>Dementia onset &lt; 1 year"]
+        O2["<b>Aim 1: Incident dementia</b><br/>N = 2,726"]
+        OX3["<b>Excluded</b><br/>No Y5 score or follow-up<br/>3MSE: 64 · DSST: 119"]
+        O3["<b>Aim 2: 3MSE</b><br/>N = 2,662"]
+        O4["<b>Aim 2: DSST</b><br/>N = 2,607"]
+
+        O0 --> O1
+        O0 -.- OX1
+        O1 --> O2
+        O1 -.- OX2
+        O2 --> O3
+        O2 --> O4
+        O2 -.- OX3
+    end
+
+    %% TODO: fill in ELISA numbers from the messages in the Elisa chunk above
+    subgraph ELISA["<b>Elisa</b>"]
+        direction TB
+        E0["CHS participants<br/>with Elisa<br/><b>N = xx</b>"]
+        EX1["<b>Excluded, n = xx</b><br/>Not in Cognition Study: xx<br/>Prevalent dementia: xx"]
+        E1["Dementia-free at baseline<br/><b>N = xx</b>"]
+        EX2["<b>Excluded, n = xx</b><br/>Dementia onset &lt; 1 year"]
+        E2["<b>Aim 1: Incident dementia</b><br/>N = xx"]
+        EX3["<b>Excluded</b><br/>No Y5 score or follow-up<br/>3MSE: xx · DSST: xx"]
+        E3["<b>Aim 2: 3MSE</b><br/>N = xx"]
+        E4["<b>Aim 2: DSST</b><br/>N = xx"]
+
+        E0 --> E1
+        E0 -.- EX1
+        E1 --> E2
+        E1 -.- EX2
+        E2 --> E3
+        E2 --> E4
+        E2 -.- EX3
+    end
+
+    classDef main  fill:#EEF3FA,stroke:#4C78A8,stroke-width:1.5px,color:#1a1a1a;
+    classDef aim   fill:#4C78A8,stroke:#35557A,stroke-width:1.5px,color:#ffffff;
+    classDef excl  fill:#ffffff,stroke:#9AA3AE,stroke-dasharray:4 3,color:#444444;
+    classDef frame fill:#FAFBFC,stroke:#D5DAE1,stroke-width:1px,color:#1a1a1a;
+
+    class S0,S1,O0,O1,E0,E1 main;
+    class S2,S3,S4,O2,O3,O4,E2,E3,E4 aim;
+    class SX1,SX2,SX3,OX1,OX2,OX3,EX1,EX2,EX3 excl;
+    class SOMA,OLINK,ELISA frame;
+```
+
+## New Venn
+
+### For aim 1
+
+```{r}
+#| fig-width: 6
+#| fig-height: 6
+
+
+ggVennDiagram(list(Olink = idnos_olink_aim1, SomaScan = idnos_soma_aim1, Elisa = idnos_elisa_aim1),
+              label_alpha = 0, edge_size = 0.5,
+              set_size = 4.5, set_color = "grey25") +
+  scale_fill_gradient(low = "#F4F6FA", high = "#4C78A8") +
+  scale_x_continuous(expand = expansion(mult = 0.25)) +
+  coord_cartesian(clip = "off") +
+  theme(legend.position = "none")
+```
+
+### For aim 2
+
+```{r}
+#| fig-width: 15
+#| fig-height: 5
+
+library(patchwork)
+
+olink <- ggVennDiagram(
+  list(
+       '3MSE' = idnos_olink_aim2_3mse, 
+       'DSST' = idnos_olink_aim2_dsst),
+              label_alpha = 0, edge_size = 0.5,
+              set_size = 4.5, set_color = "grey25") +
+  scale_fill_gradient(low = "#F4F6FA", high = "#4C78A8") +
+  scale_x_continuous(expand = expansion(mult = 0.25)) +
+  coord_cartesian(clip = "off") +
+  labs(title = "Olink") +
+  theme(legend.position = "none")
+
+soma <- ggVennDiagram(
+  list(
+    '3MSE' = idnos_soma_aim2_3mse, 
+    'DSST' = idnos_soma_aim2_dsst),
+  label_alpha = 0, edge_size = 0.5,
+  set_size = 4.5, set_color = "grey25") +
+  scale_fill_gradient(low = "#F4F6FA", high = "#4C78A8") +
+  scale_x_continuous(expand = expansion(mult = 0.25)) +
+  coord_cartesian(clip = "off") +
+  labs(title = "SomaScan") +
+  theme(legend.position = "none")
+
+elisa <- ggVennDiagram(
+  list(
+    '3MSE' = idnos_elisa_aim2_3mse, 
+    'DSST' = idnos_elisa_aim2_dsst),
+  label_alpha = 0, edge_size = 0.5,
+  set_size = 4.5, set_color = "grey25") +
+  scale_fill_gradient(low = "#F4F6FA", high = "#4C78A8") +
+  scale_x_continuous(expand = expansion(mult = 0.25)) +
+  coord_cartesian(clip = "off") +
+  labs(title = "Elisa") +
+  theme(legend.position = "none")
+
+olink + soma + elisa
+```
+
+## Table 1
+
+```{r}
+data_clin_filt <- data_clin %>%
+  filter(idno %in% idnos_olink_aim1 | idno %in% idnos_soma_aim1 | idno %in% idnos_elisa_aim1) %>%
+  mutate(
+    platform = case_when(
+      idno %in% idnos_olink_aim1 & idno %in% idnos_soma_aim1 & idno %in% idnos_elisa_aim1 ~ "Olink, SomaScan and Elisa",
+      idno %in% idnos_olink_aim1 & idno %in% idnos_soma_aim1 ~ "Olink and SomaScan",
+      idno %in% idnos_olink_aim1 & idno %in% idnos_elisa_aim1 ~ "Olink and Elisa",
+      idno %in% idnos_soma_aim1 & idno %in% idnos_elisa_aim1 ~ "SomaScan and Elisa",
+      idno %in% idnos_olink_aim1 ~ "Olink only",
+      idno %in% idnos_soma_aim1 ~ "SomaScan only",
+      idno %in% idnos_elisa_aim1 ~ "Elisa only",
+    ))
+
+
+```
+
+```{r}
+
+ids_soma  <- idnos_soma_aim1
+ids_olink <- idnos_olink_aim1
+ids_elisa <- idnos_elisa_aim1
+ids_all <- Reduce(intersect, list(idnos_soma_aim1, idnos_olink_aim1, idnos_elisa_aim1))
+
+
+yn <- function(x) if (is.numeric(x)) factor(x, levels = 0:1, labels = c("No", "Yes")) else x
+
+tbl_data <- bind_rows(
+  data_clin_filt %>% filter(idno %in% ids_soma)  %>% mutate(platform = "SomaScan"),
+  data_clin_filt %>% filter(idno %in% ids_olink) %>% mutate(platform = "Olink"),
+  data_clin_filt %>% filter(idno %in% ids_elisa) %>% mutate(platform = "Elisa"),
+  data_clin_filt %>% filter(idno %in% ids_all)  %>% mutate(platform = "All platforms")
+) %>%
+  mutate(
+    platform = factor(platform, levels = c("SomaScan", "Olink", "Elisa", "All platforms")),
+    apoe4    = factor(if_else(grepl("4", apoecvd), "Yes", "No")),   # NA stays NA
+    incident_dem = factor(if_else(demclass == "Incident", "Yes", "No")),
+    across(c(prevdm_y5, kiddis_y5, htnmed_y5, lipid_y5, estrgn_y5), yn)
+  ) %>%
+  select(
+    platform,
+    age_y5, gend01, race01, grade01, clinic, perstat,
+    bmi_y5, waist_y5, smoke_y5, alcoh_y5, kcal_y5,
+    avesys_y5, hyper_y5, htnmed_y5, prevdm_y5, gluadj_y5,
+    ldl_y5, hdl_y5, trig_y5, lipid_y5, crp_y5,
+    egfr_y5, kiddis_y5, chdyr5, stkyr5, estrgn_y5, depscr_y5,
+    apoe4, incident_dem, yearsfu
+  )
+
+skewed <- c("alcoh_y5", "kcal_y5", "trig_y5", "crp_y5", "gluadj_y5", "yearsfu")
+
+table1 <- tbl_data %>%
+  tbl_summary(
+    by = platform,
+    type = list(c(age_y5, avesys_y5, depscr_y5) ~ "continuous"),
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_of(skewed)   ~ "{median} ({p25}, {p75})",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    value = list(
+      c(htnmed_y5, prevdm_y5, lipid_y5, kiddis_y5, estrgn_y5, apoe4, incident_dem) ~ "Yes",
+      gend01 ~ "Male"
+    ),
+    digits = list(all_continuous() ~ 1, all_categorical() ~ c(0, 1)),
+    label = list(
+      age_y5       ~ "Age, years",
+      gend01       ~ "Male sex",
+      race01       ~ "Race",
+      grade01      ~ "Education",
+      clinic       ~ "Field center",
+      perstat      ~ "Cohort",
+      bmi_y5       ~ "BMI, kg/m²",
+      waist_y5     ~ "Waist circumference, cm",
+      smoke_y5     ~ "Smoking status",
+      alcoh_y5     ~ "Alcohol, drinks/week",
+      kcal_y5      ~ "Physical activity, kcal/week",
+      avesys_y5    ~ "Systolic BP, mmHg",
+      hyper_y5     ~ "Hypertension status",
+      htnmed_y5    ~ "Antihypertensive medication",
+      prevdm_y5    ~ "Diabetes",
+      gluadj_y5    ~ "Glucose, mg/dL",
+      ldl_y5       ~ "LDL cholesterol, mg/dL",
+      hdl_y5       ~ "HDL cholesterol, mg/dL",
+      trig_y5      ~ "Triglycerides, mg/dL",
+      lipid_y5     ~ "Lipid-lowering medication",
+      crp_y5       ~ "CRP, mg/L",
+      egfr_y5      ~ "eGFR, mL/min/1.73 m²",
+      kiddis_y5    ~ "Self-reported kidney disease",
+      chdyr5       ~ "Prevalent CHD",
+      stkyr5       ~ "Prevalent stroke",
+      estrgn_y5    ~ "Estrogen use",
+      depscr_y5    ~ "CES-D depression score",
+      apoe4        ~ "APOE ε4 carrier",
+      incident_dem ~ "Incident dementia during follow-up",
+      yearsfu      ~ "Follow-up, years"
+    ),
+    missing = "ifany",
+    missing_text = "Missing"
+  ) %>%
+  modify_header(
+    label ~ "**Characteristic**",
+    all_stat_cols() ~ "**{level}**  \nN = {style_number(n)}"
+  ) %>%
+  modify_spanning_header(all_stat_cols() ~ "**Proteomics platform**") %>%
+  modify_caption("**Table 1.** Baseline (CHS Year 5) characteristics by proteomics platform") %>%
+  modify_footnote(all_stat_cols() ~
+                    "Mean (SD), median (IQR) or n (%). Participants measured on more than one platform appear in each of their platform columns.") %>%
+  bold_labels()
+
+table1
+
+# Export
+table1 %>% as_gt() %>% gtsave(file.path(data_path, 'Analysis', '1_data_exploration', 'table1.docx' ))   # or .html / .png
+
+```
+
+```{r}
+write_csv(data_clin_filt, file.path(data_path, 'Data_processed', 'Meineche_10237_recoded_filtered.csv'))
+```
+
+# Descriptives
+
+**2. Descriptives**
+
+- Table 1 across tertiles of the primary exposure.
+
+- Klotho against age, sex and kidney function (Klotho is strongly tied to the kidney, so consider adding eGFR as a covariate).
+
+- Replace the placeholder cognition score in the GAM plot with the real year-5 3MSE and DSST.
+
+## Tertiles of primary exposure
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| results: asis
+
+
+yn <- function(x) if (is.numeric(x)) factor(x, levels = 0:1, labels = c("No", "Yes")) else x
+
+values_klot <- full_join(
+  data_olink %>% 
+    mutate(idno = as.character(idno)) %>% 
+    rename_with(~ paste0(.x, "_olink"), -idno),
+  data_soma  %>% 
+    mutate(idno = as.character(idno)) %>% 
+    rename_with(~ paste0(.x, "_soma"), -idno),
+  by = "idno"
+  ) %>%
+  full_join(
+    data_elisa %>% 
+      mutate(idno = as.character(idno)) %>% 
+      select(idno, KL = klot_elisa) %>% 
+      rename_with(~ paste0(.x, "_elisa"), -idno),
+    by = "idno"
+  ) %>%
+  filter(idno %in% c(idnos_olink_aim1, idnos_soma_aim1, idnos_elisa_aim1))
+
+klot_vars <- values_klot %>% select(ends_with("_olink"), ends_with("_soma"), ends_with("_elisa")) %>% names()
+
+# ---- Clinical data with derived variables (built once) ----
+clin_tbl <- data_clin_filt %>%
+  mutate(
+    idno = as.character(idno),
+    across(c(prevdm_y5, kiddis_y5, htnmed_y5, lipid_y5, estrgn_y5), yn),
+    apoe4 = factor(if_else(grepl("4", apoecvd), "Yes", "No")),
+    incident_dem = factor(if_else(demclass == "Incident", "Yes", "No")),
+    dem_outcome = case_when(
+      demclass == "Incident" & demtype == "AD only"  ~ "Incident: AD",
+      demclass == "Incident" & demtype == "Mixed"    ~ "Incident: mixed AD/VaD",
+      demclass == "Incident" & demtype == "VaD only" ~ "Incident: VaD",
+      demclass == "Incident"                         ~ "Incident: other/unknown type",
+      demclass == "MCI"                              ~ "MCI (no dementia)",
+      demclass == "Normal"                           ~ "Normal"
+    ) %>% factor(levels = c("Normal", "MCI (no dementia)", "Incident: AD",
+                            "Incident: mixed AD/VaD", "Incident: VaD",
+                            "Incident: other/unknown type"))
+  )
+
+tbl_vars <- c(
+  "age_y5", "gend01", "race01", "grade01", "clinic", "perstat",
+  "bmi_y5", "waist_y5", "smoke_y5", "alcoh_y5", "kcal_y5",
+  "avesys_y5", "hyper_y5", "htnmed_y5", "prevdm_y5", "gluadj_y5",
+  "ldl_y5", "hdl_y5", "trig_y5", "lipid_y5", "crp_y5",
+  "egfr_y5", "kiddis_y5", "chdyr5", "stkyr5", "estrgn_y5", "depscr_y5",
+  "apoe4",
+  "score134_y5", "digcor_y5",
+  "incident_dem", "dem_outcome", "yearsfu"
+)
+
+skewed <- c("alcoh_y5", "kcal_y5", "trig_y5", "crp_y5", "gluadj_y5", "yearsfu")
+
+
+# Loop for each measure
+for (klot_var in klot_vars) {
+
+  tbl <- values_klot %>%
+    select(idno, all_of(klot_var)) %>%
+    filter(!is.na(.data[[klot_var]])) %>%
+    left_join(clin_tbl, by = "idno") %>%
+    mutate(tertile = ntile(.data[[klot_var]], 3) %>%
+             factor(labels = c("Low", "Mid", "High"))) %>%
+    select(tertile, all_of(tbl_vars)) %>%
+    tbl_summary(
+      by = tertile,
+      type = list(c(age_y5, avesys_y5, depscr_y5, score134_y5, digcor_y5) ~ "continuous"),
+      statistic = list(
+        all_continuous()  ~ "{mean} ({sd})",
+        all_of(skewed)    ~ "{median} ({p25}, {p75})",
+        all_categorical() ~ "{n} ({p}%)"
+      ),
+      value = list(
+        c(htnmed_y5, prevdm_y5, lipid_y5, kiddis_y5, estrgn_y5, apoe4, incident_dem) ~ "Yes",
+        gend01 ~ "Male"
+      ),
+      digits = list(all_continuous() ~ 1, all_categorical() ~ c(0, 1)),
+      label = list(
+        age_y5       ~ "Age, years",
+        gend01       ~ "Male sex",
+        race01       ~ "Race",
+        grade01      ~ "Education",
+        clinic       ~ "Field center",
+        perstat      ~ "Cohort",
+        bmi_y5       ~ "BMI, kg/m²",
+        waist_y5     ~ "Waist circumference, cm",
+        smoke_y5     ~ "Smoking status",
+        alcoh_y5     ~ "Alcohol, drinks/week",
+        kcal_y5      ~ "Physical activity, kcal/week",
+        avesys_y5    ~ "Systolic BP, mmHg",
+        hyper_y5     ~ "Hypertension status",
+        htnmed_y5    ~ "Antihypertensive medication",
+        prevdm_y5    ~ "Diabetes",
+        gluadj_y5    ~ "Glucose, mg/dL",
+        ldl_y5       ~ "LDL cholesterol, mg/dL",
+        hdl_y5       ~ "HDL cholesterol, mg/dL",
+        trig_y5      ~ "Triglycerides, mg/dL",
+        lipid_y5     ~ "Lipid-lowering medication",
+        crp_y5       ~ "CRP, mg/L",
+        egfr_y5      ~ "eGFR, mL/min/1.73 m²",
+        kiddis_y5    ~ "Self-reported kidney disease",
+        chdyr5       ~ "Prevalent CHD",
+        stkyr5       ~ "Prevalent stroke",
+        estrgn_y5    ~ "Estrogen use",
+        depscr_y5    ~ "CES-D depression score",
+        apoe4        ~ "APOE ε4 carrier",
+        score134_y5  ~ "3MSE score, Year 5",
+        digcor_y5    ~ "DSST score, Year 5",
+        incident_dem ~ "Incident dementia during follow-up",
+        dem_outcome  ~ "Dementia status / subtype",
+        yearsfu      ~ "Follow-up, years"
+      ),
+      missing = "ifany",
+      missing_text = "Missing"
+    ) %>%
+    add_p(test = list(all_categorical() ~ "chisq.test")) %>%
+    modify_header(
+      label ~ "**Characteristic**",
+      all_stat_cols() ~ "**{level}**  \nN = {style_number(n)}"
+    ) %>%
+    modify_spanning_header(all_stat_cols() ~ paste0("**Tertiles of ", klot_var, "**")) %>%
+    bold_labels() %>%
+    bold_p()
+  
+  cat("\n\n### ", klot_var, "\n\n", sep = "")
+  
+  # Save
+  tbl %>% as_gt() %>% 
+    gtsave(
+      file.path(
+        data_path, 'Analysis', '1_data_exploration', 'klot_tertiles', 
+        glue('table1_tertile_{klot_var}.docx') 
+        )) 
+  
+  # Print in norebook
+  print(tbl)
+  
+}
+
+```
+
+## Klotho against age, sex and kidney function
+
+### Unadjusted
+
+```{r}
+#| figure-width: 7
+#| figure-height: 4
+
+tbl <- left_join(clin_tbl, values_klot, by = "idno") %>%
+  select(idno, all_of(klot_vars), age_y5, gend01, egfr_y5, cystatc_y5, race01, clinic)
+
+cormat <- tbl %>%
+  pivot_longer(all_of(klot_vars), names_to = "protein", values_to = "value") %>%
+  group_by(protein) %>%
+  summarise(
+    rho_age    = cor(value, age_y5,     method = "spearman", use = "complete.obs"),
+    rho_egfr   = cor(value, egfr_y5,    method = "spearman", use = "complete.obs"),
+    rho_cystc  = cor(value, cystatc_y5, method = "spearman", use = "complete.obs"),
+    # sex: difference in medians (Male - Female) + Wilcoxon p
+    diff_sex   = median(value[gend01 == "Male"], na.rm = TRUE) -
+      median(value[gend01 == "Female"], na.rm = TRUE),
+    p_sex      = wilcox.test(value ~ gend01)$p.value
+  )
+
+hm <- cormat %>%
+  pivot_longer(cols = -c(protein, p_sex), 
+              values_to = 'rho',
+              names_to = 'fac') %>%
+  ggplot(aes(x=protein, y=fac, fill=rho)) + 
+  geom_tile() + 
+  scale_fill_gradient2(low = "steelblue", high = "#990033",mid = "white", limits = c(-1, 1)) +
+  geom_text(inherit.aes = T, aes(label = round(rho, 2))) + 
+  labs(y = 'Factor', x = 'Protein', fill = '') + 
+  theme_minimal()
+
+hm
+
+ggsave(file.path(data_path, 'Analysis', '1_data_exploration', 'cor_hm_clin.png'),
+       hm, height = 4, width = 7)  
+
+```
+
+```{r}
+#| figure-width: 8
+#| figure-height: 8
+
+corplots <- tbl %>%
+  select(all_of(klot_vars), age_y5, egfr_y5, cystatc_y5) %>%
+  pivot_longer(all_of(klot_vars), names_to = "protein", values_to = "value") %>%
+  pivot_longer(c(age_y5, egfr_y5, cystatc_y5), names_to = "fac", values_to = "level") %>%
+  ggplot(aes(x = level, y = value)) +
+  geom_point(alpha = 0.1, size = 0.4, colour = "grey50") +
+  geom_smooth(method = "lm", colour = "#4C78A8", fill = "#4C78A8", alpha = 0.2) +
+  stat_cor(method = "spearman", cor.coef.name = "rho",
+           label.x.npc = "left", label.y.npc = "top",
+           size = 3, p.accuracy = 0.001, r.accuracy = 0.01) +
+  facet_grid(protein ~ fac, scales = "free") +
+  labs(x = NULL, y = "Protein level") +
+  theme_minimal()
+
+corplots
+
+ggsave(file.path(data_path, 'Analysis', '1_data_exploration', 'corplots_num_klot.png'),
+       corplots, height = 8, width = 8)  
+
+```
+
+```{r}
+#| figure-width: 10
+#| figure-height: 12
+
+boxplots <- tbl %>%
+  select(c(all_of(klot_vars), race01, clinic, gend01)) %>%
+  pivot_longer(all_of(klot_vars), 
+               names_to = "protein", 
+               values_to = "value") %>%
+  pivot_longer(c(race01, clinic, gend01),
+                names_to  = "fac",
+                values_to = "level",
+                values_transform = list(level = as.character)) %>%
+  ggplot(aes(x=level, y=value, fill = level)) + 
+  geom_boxplot(outlier.size = 0.4) + 
+  facet_grid(protein ~ fac , scales = "free") + 
+  scale_fill_brewer(palette = "Set2") +
+  labs(y='Intensity', x='s') + 
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+
+
+boxplots +
+  geom_pwc(
+    method = "wilcox_test",           # pairwise Mann–Whitney (skewed data)
+    label = "p.adj.signif",           # * / ** / *** after adjustment
+    p.adjust.method = "holm",
+    hide.ns = TRUE,                   # only draw brackets that are significant
+    tip.length = 0.01,
+    step.increase = 0.08,
+    size = 0.3, label.size = 3
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))   # room for brackets
+
+boxplots
+
+ggsave(file.path(data_path, 'Analysis', '1_data_exploration', 'boxplot_clinic_race_klot.png'),
+       boxplots, height = 12, width = 10)  
+```
+
+### Mutually adjusted
+
+```{r}
+library(broom)
+
+assoc_res <- map_dfr(klot_vars, function(v) {
+  lm(scale(tbl[[v]]) ~ scale(age_y5) + gend01 + scale(egfr_y5) + race01 + clinic,
+     data = tbl) %>%
+    tidy(conf.int = TRUE) %>%
+    filter(term %in% c("scale(age_y5)", "gend01Male", "scale(egfr_y5)")) %>%
+    mutate(protein = v)
+})
+
+assoc_res
+
+
+write_xlsx(assoc_res, file.path(data_path, 'Analysis', '1_data_exploration', 'lm_age_eGFR_sex.xlsx'))
+
+# Forest plot
+
+assoc_res %>%
+  mutate(term = recode(term,
+                       "scale(age_y5)"  = "Age (per SD)",
+                       "gend01Male"     = "Male vs female",
+                       "scale(egfr_y5)" = "eGFR (per SD)")) %>%
+  ggplot(aes(x = estimate, y = protein, xmin = conf.low, xmax = conf.high)) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey60") +
+  geom_pointrange(colour = "#4C78A8") +
+  facet_wrap(~ term) +
+  labs(x = "Difference in protein (SD units), mutually adjusted", y = NULL) +
+  theme_minimal()
+
+ggsave(file.path(data_path, 'Analysis', '1_data_exploration', 'lm_age_eGFR_sex.png'))
+```
+
+## GAM of cognition
+
+Replace the placeholder cognition score in the GAM plot with the real year-5 3MSE and DSST
+
+```{r}
+#| fig-width: 10
+#| fig-height: 12
+#| message: false
+#| warning: false
+
+
+gam_plot <- left_join(clin_tbl, values_klot, by = "idno") %>%
+  select(idno, all_of(klot_vars), score134_y5, digcor_y5) %>%
+  pivot_longer(all_of(klot_vars), names_to = "protein", values_to = "value") %>%
+  pivot_longer(c(score134_y5, digcor_y5), names_to = "test", values_to = "score") %>%
+  mutate(test = recode(test, score134_y5 = "3MSE, Year 5", digcor_y5 = "DSST, Year 5")) %>%
+  filter(!is.na(value), !is.na(score)) %>%
+  ggplot(aes(x = value, y = score)) +
+  geom_point(alpha = 0.1, size = 0.4, colour = "grey50") +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"),
+              colour = "#4C78A8", fill = "#4C78A8", alpha = 0.2) +
+  facet_grid(protein ~ test, scales = "free") +
+  labs(x = "Protein level", y = "Cognitive score") +
+  theme_minimal()
+
+gam_plot
+```
+
+```{r}
+
+data_soma_win <- read_xlsx(
+  file.path(
+    data_path, 'Data_processed', 'soma_y5_klotho.xlsx'
+  ), 
+  sheet = 'values_win99'
+) %>% mutate(idno=as.character(idno))
+
+data_olink_win <- read_xlsx(
+  file.path(
+    data_path, 'Data_processed', 'olink_y5_klotho.xlsx'
+  ), 
+  sheet = 'values_win99'
+)
+
+data_elisa_win <- read_xlsx(
+  file.path(
+    data_path, 'Data_processed', 'elisa_klotho.xlsx'
+  ), 
+  sheet = 'values_win99'
+)
+
+values_klot_win <- full_join(data_olink_win %>% 
+                               mutate(idno = as.character(idno)) %>% 
+                               rename_with(~ paste0(.x, "_olink"), -idno),
+                             data_soma_win  %>% 
+                               mutate(idno = as.character(idno)) %>% 
+                               rename_with(~ paste0(.x, "_soma"), -idno),
+                             by = "idno") %>%
+  full_join(data_elisa_win %>% 
+              mutate(idno = as.character(idno)) %>% 
+              select(idno, KL = klot_elisa) %>% 
+              rename_with(~ paste0(.x, "_elisa"), -idno),
+            by = "idno")
+
+gam_plot <- left_join(clin_tbl, values_klot_win, by = "idno") %>%
+  select(idno, all_of(klot_vars), score134_y5, digcor_y5) %>%
+  pivot_longer(all_of(klot_vars), names_to = "protein", values_to = "value") %>%
+  pivot_longer(c(score134_y5, digcor_y5), names_to = "test", values_to = "score") %>%
+  mutate(test = recode(test, score134_y5 = "3MSE, Year 5", digcor_y5 = "DSST, Year 5")) %>%
+  filter(!is.na(value), !is.na(score)) %>%
+  ggplot(aes(x = value, y = score)) +
+  geom_point(alpha = 0.1, size = 0.4, colour = "grey50") +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"),
+              colour = "#4C78A8", fill = "#4C78A8", alpha = 0.2)+
+  stat_cor(method = "spearman", cor.coef.name = "rho",
+           label.x.npc = "left", label.y.npc = "bottom",
+           size = 3, r.accuracy = 0.01, p.accuracy = 0.001)+
+  facet_grid(test~protein, scales = "free") +
+  labs(x = "Protein level", y = "Cognitive score") +
+  theme_minimal()
+
+gam_plot
+
+ggsave(file.path(data_path, 'Analysis', '1_data_exploration', 'gam_prot_cog.png'),
+       gam_plot, height = 5, width = 9)
+```
